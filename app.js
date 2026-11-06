@@ -585,7 +585,7 @@ function closeSecurityModal() {
 
 // ===== Fix #23: admin password pair, staff accounts, staff login =====
 const ADMIN_MASTER_KEY = 'ghs_walton_admin_master_v1';
-const EMAILJS_STAFF_TEMPLATE_ID = 'template_51me608';
+const EMAILJS_STAFF_TEMPLATE_ID = 'template_r07u0sq';
 function getAdminGeneralPassword() { return localStorage.getItem('ghs_walton_admin_password_v1') || DEFAULT_ADMIN_PASSWORD; }
 function getAdminMasterPassword() {
     try { return localStorage.getItem(ADMIN_MASTER_KEY) || securityGetMasterPin(); }
@@ -1025,7 +1025,7 @@ function verifyOtpAndSetNewPassword(event) {
 // the existing OTP endpoint (same as the OTP recovery system).
 const SECURITY_MASTER_PIN = "Walton2026";
 const SECURITY_EMAIL = "asifjaved81@gmail.com";
-const SECURITY_EXPECTED_APPJS_HASH = "910b0239"; // __SECURITY_HASH_LINE__ (replaced at build time)
+const SECURITY_EXPECTED_APPJS_HASH = "86676239"; // __SECURITY_HASH_LINE__ (replaced at build time)
 let securityTamperDetected = false;
 let securitySessionPin = null;
 
