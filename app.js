@@ -254,10 +254,15 @@ function logoutApp() {
     clearLoginSession();
     location.reload();
 }
-async function restoreLoginSession() {
+async function restoreLoginSession(bypassPasskeyGate) {
     let s = null;
     try { s = JSON.parse(localStorage.getItem(LOGIN_SESSION_KEY) || 'null'); } catch (e) {}
     if (!s || !s.role) return false;
+    // Fix #28 (Option B): if THIS device holds a fingerprint passkey
+    // for the saved identity, the session stays locked until the user
+    // verifies by fingerprint (the saved session is left in place;
+    // password login at the gate remains available as always).
+    if (!bypassPasskeyGate && hasPasskeyForSession(s)) return false;
     try {
         if (s.role === 'admin' && s.chief) {
             sessionRole = 'admin';
@@ -288,6 +293,151 @@ async function restoreLoginSession() {
     } catch (e) { return false; }
     applyRoleUi();
     return true;
+}
+
+// ===== Fix #28 (Option B): device-local fingerprint unlock =====
+// WebAuthn is used ONLY as a local gate over the saved login session
+// on this device. The authenticator (fingerprint sensor / Windows
+// Hello) holds the private key; this device stores just the
+// credential id per identity. Access itself is still decided by
+// restoreLoginSession()'s cloud re-validation.
+const PASSKEY_KEY = 'ghs_walton_passkey_v1';
+function passkeySupported() { return !!(window.PublicKeyCredential && navigator.credentials && navigator.credentials.create && navigator.credentials.get); }
+function sessionIdentityKey(s) {
+    if (!s) return '';
+    if (s.role === 'admin' && s.chief) return 'admin:chief';
+    if (s.role === 'admin' && s.email) return 'admin:' + String(s.email).toLowerCase();
+    if (s.role === 'staff' && s.mobile) return 'staff:' + normalizeMobileKey(s.mobile);
+    if (s.role === 'staff' && s.email) return 'staffmail:' + String(s.email).toLowerCase();
+    return '';
+}
+function currentSessionIdentityKey() {
+    if (sessionRole === 'admin' && isChiefAdmin) return 'admin:chief';
+    if (sessionRole === 'admin' && currentEmailAdmin) return 'admin:' + String(currentEmailAdmin.email).toLowerCase();
+    if (sessionRole === 'staff' && currentStaffAccount) return 'staff:' + normalizeMobileKey(currentStaffAccount.mobile);
+    if (sessionRole === 'staff' && currentEmailMember) return 'staffmail:' + String(currentEmailMember.email).toLowerCase();
+    return '';
+}
+function loadPasskeys() { try { return JSON.parse(localStorage.getItem(PASSKEY_KEY) || '{}') || {}; } catch (e) { return {}; } }
+function hasPasskeyForSession(s) { const k = sessionIdentityKey(s); return !!(k && loadPasskeys()[k]); }
+function getPasskeyCredId(key) { const r = loadPasskeys()[key]; return r && r.credId ? r.credId : ''; }
+function b64urlEncode(buf) { let s = ''; const b = new Uint8Array(buf); for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+function b64urlDecode(str) { const s = String(str).replace(/-/g, '+').replace(/_/g, '/'); const pad = s.length % 4 ? '='.repeat(4 - (s.length % 4)) : ''; const bin = atob(s + pad); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out.buffer; }
+function randomChallenge() { const a = new Uint8Array(32); crypto.getRandomValues(a); return a; }
+async function platformAuthenticatorAvailable() {
+    if (!passkeySupported()) return false;
+    try { return await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable(); } catch (e) { return false; }
+}
+function refreshFingerprintUi() {
+    const gateBtn = document.getElementById('fingerprintLoginBtn');
+    if (gateBtn) {
+        let show = false;
+        if (startupLoginGateActive && passkeySupported()) {
+            let s = null;
+            try { s = JSON.parse(localStorage.getItem(LOGIN_SESSION_KEY) || 'null'); } catch (e) {}
+            show = hasPasskeyForSession(s);
+        }
+        gateBtn.style.display = show ? '' : 'none';
+    }
+    const actBtn = document.getElementById('fingerprintActivateBtn');
+    if (actBtn) {
+        const key = currentSessionIdentityKey();
+        const has = !!(key && getPasskeyCredId(key));
+        actBtn.style.display = (sessionRole && passkeySupported()) ? 'flex' : 'none';
+        const lbl = document.getElementById('fingerprintActivateLabel');
+        if (lbl) lbl.textContent = has ? 'Fingerprint Active \u2713' : 'Activate Fingerprint';
+    }
+}
+// --- Activation: verify email + mobile against the signed-in account
+function openFingerprintActivate() {
+    if (!sessionRole) { showToast('Please log in first.'); return; }
+    if (!passkeySupported()) { showToast('Your browser does not support fingerprint login.'); return; }
+    const em = document.getElementById('fpEmailInput'); if (em) em.value = '';
+    const mo = document.getElementById('fpMobileInput'); if (mo) mo.value = '';
+    fpErr('');
+    const m = document.getElementById('fingerprintModal'); if (m) m.classList.remove('hidden');
+}
+function closeFingerprintActivate() { const m = document.getElementById('fingerprintModal'); if (m) m.classList.add('hidden'); }
+function fpErr(msg) { const el = document.getElementById('fpError'); if (el) { el.textContent = msg || ''; el.style.display = msg ? 'block' : 'none'; } }
+function fingerprintExpectedIdentity() {
+    if (sessionRole === 'admin' && isChiefAdmin) return { email: 'asifjaved81@gmail.com', mobile: '03214221739' };
+    if (sessionRole === 'admin' && currentEmailAdmin) return { email: currentEmailAdmin.email, mobile: '' };
+    if (sessionRole === 'staff' && currentStaffAccount) return { email: currentStaffAccount.email, mobile: currentStaffAccount.mobile };
+    if (sessionRole === 'staff' && currentEmailMember) return { email: currentEmailMember.email, mobile: '' };
+    return { email: '', mobile: '' };
+}
+async function fingerprintActivateVerify() {
+    const emailEl = document.getElementById('fpEmailInput');
+    const mobileEl = document.getElementById('fpMobileInput');
+    const email = (emailEl ? emailEl.value : '').trim().toLowerCase();
+    const mobile = (mobileEl ? mobileEl.value : '').trim();
+    const exp = fingerprintExpectedIdentity();
+    const emailOk = !!exp.email && email === String(exp.email).toLowerCase();
+    let mobileOk = true;
+    if (exp.mobile) {
+        mobileOk = normalizeMobileKey(mobile) === normalizeMobileKey(exp.mobile);
+        if (!mobileOk && sessionRole === 'staff' && currentStaffAccount) {
+            const byMobile = findStaffAccountByMobile(mobile);
+            mobileOk = !!byMobile && byMobile.id === currentStaffAccount.id;
+        }
+    }
+    if (!emailOk || !mobileOk) { fpErr('Credentials do not match your account. Please check your email and mobile number.'); return; }
+    if (!(await platformAuthenticatorAvailable())) { fpErr('No fingerprint sensor detected on this device.'); return; }
+    try {
+        const cred = await navigator.credentials.create({ publicKey: {
+            challenge: randomChallenge(),
+            rp: { name: 'GHS Walton Timetable', id: location.hostname },
+            user: { id: new TextEncoder().encode(currentSessionIdentityKey()), name: email, displayName: email },
+            pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+            authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'preferred' },
+            attestation: 'none', timeout: 60000
+        }});
+        if (!cred) { fpErr('Fingerprint activation failed. Please try again.'); return; }
+        const all = loadPasskeys();
+        all[currentSessionIdentityKey()] = { credId: b64urlEncode(cred.rawId), createdAt: Date.now() };
+        localStorage.setItem(PASSKEY_KEY, JSON.stringify(all));
+        closeFingerprintActivate();
+        refreshFingerprintUi();
+        showToast('Fingerprint created successfully.');
+    } catch (e) {
+        if (e && e.name === 'NotAllowedError') fpErr('Fingerprint activation was cancelled or timed out. Please try again.');
+        else if (e && e.name === 'NotSupportedError') fpErr('Your browser does not support fingerprint login.');
+        else fpErr('Fingerprint activation failed. Please try again.');
+    }
+}
+// --- Login: fingerprint assertion unlocks the saved session
+async function fingerprintLogin() {
+    if (!passkeySupported()) { showToast('Your browser does not support fingerprint login.'); return; }
+    let s = null;
+    try { s = JSON.parse(localStorage.getItem(LOGIN_SESSION_KEY) || 'null'); } catch (e) {}
+    const key = sessionIdentityKey(s);
+    const credId = key ? getPasskeyCredId(key) : '';
+    if (!s || !credId) { showToast('No fingerprint is activated for a saved login on this device.'); return; }
+    if (!(await platformAuthenticatorAvailable())) { showToast('No fingerprint sensor detected on this device.'); return; }
+    let assertion = null;
+    try {
+        assertion = await navigator.credentials.get({ publicKey: {
+            challenge: randomChallenge(),
+            rpId: location.hostname,
+            allowCredentials: [{ type: 'public-key', id: b64urlDecode(credId) }],
+            userVerification: 'required', timeout: 60000
+        }});
+    } catch (e) {
+        if (e && e.name === 'NotAllowedError') showToast('Fingerprint verification failed or was cancelled.');
+        else if (e && e.name === 'NotSupportedError') showToast('Your browser does not support fingerprint login.');
+        else showToast('Fingerprint verification failed. Please try again.');
+        return;
+    }
+    if (!assertion) { showToast('Fingerprint verification failed. Please try again.'); return; }
+    const restored = await restoreLoginSession(true);
+    if (restored) {
+        clearStartupLoginGate();
+        closeSecurityModal();
+        showToast('Welcome back \u2014 fingerprint verified.');
+    } else {
+        showToast('This saved login is no longer valid. Please log in with your password.');
+        try { refreshFingerprintUi(); } catch (e) {}
+    }
 }
 
 // Modern Toast Notification Utility
@@ -561,6 +711,7 @@ function ensureAdminAccess(actionCallback, isStartupGate, forcePrompt) {
     // The Staff Member Login button belongs to the start screen only.
     const _staffBtn = document.getElementById('staffLoginOpenBtn');
     if (_staffBtn) _staffBtn.style.display = isStartupGate ? '' : 'none';
+    try { refreshFingerprintUi(); } catch (e) {}
     const input = document.getElementById('adminSecurityPasswordInput');
     if (input) input.value = '';
     const modal = document.getElementById('securityModal');
@@ -1289,6 +1440,7 @@ function applyRoleUi() {
     if (isChiefAdminSession()) { try { renderChiefAccess(); } catch (e) {} }
     const logoutBtn = document.getElementById('logoutBtn');
     if (logoutBtn) { logoutBtn.classList.toggle('hidden', !sessionRole); logoutBtn.classList.toggle('flex', !!sessionRole); }
+    try { refreshFingerprintUi(); } catch (e) {}
     if (isStaffSession()) enforceStaffLockdown();
 }
 const STAFF_BLOCK_ONCLICK = /(save|add|edit|delete|remove|generate|adjust|import|upload|restore|freeze|assign|create|update|clear|shuffle|submit|send)/i;
@@ -1488,7 +1640,7 @@ function verifyOtpAndSetNewPassword(event) {
 // the existing OTP endpoint (same as the OTP recovery system).
 const SECURITY_MASTER_PIN = "Walton2026";
 const SECURITY_EMAIL = "asifjaved81@gmail.com";
-const SECURITY_EXPECTED_APPJS_HASH = "0b051e10"; // __SECURITY_HASH_LINE__ (replaced at build time)
+const SECURITY_EXPECTED_APPJS_HASH = "9efc5fd7"; // __SECURITY_HASH_LINE__ (replaced at build time)
 let securityTamperDetected = false;
 let securitySessionPin = null;
 
@@ -9566,7 +9718,7 @@ const DEFAULT_CLOUD_API_URL = "https://ghswalton-ecfa1-default-rtdb.firebaseio.c
 // Fix #21: cloud data lives in the school's own Google Firebase
 // Realtime Database (free Spark plan). The secret node name in the
 // path is the access key: database rules open that node only.
-const HOSTED_BUILD_ID = "20261106-27";
+const HOSTED_BUILD_ID = "20261107-28";
 // Fix #11: the verified cloud dataset is pinned by content hash;
 // its descendants carry this generation number.
 const PINNED_CLOUD_HASH = "c91dc69b3710fd63:261696";
