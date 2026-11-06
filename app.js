@@ -220,6 +220,11 @@ let currentPreviewOrientation = "portrait";
 const DEFAULT_ADMIN_PASSWORD = 'walton123';
 let isSystemAdminUnlocked = false;
 let adminPendingCallback = null;
+// Fix #23: who is using the site — 'admin' (full access) or 'staff'
+// (view-only). Set at login; null before login.
+let sessionRole = null;
+let currentStaffAccount = null;
+function isStaffSession() { return sessionRole === 'staff'; }
 
 // Modern Toast Notification Utility
 function showToast(msg) {
@@ -476,6 +481,9 @@ function updateLiveBellTimeIndicator() {
 // clears the gate — so the login can never be bypassed.
 let startupLoginGateActive = false;
 function ensureAdminAccess(actionCallback, isStartupGate, forcePrompt) {
+    // Fix #23: a staff (view-only) session is never asked for a password;
+    // the area simply opens under the view-only lockdown.
+    if (isStaffSession()) { if (actionCallback) actionCallback(); return; }
     // Data Distribution ALWAYS asks for the Admin password, even when the
     // session is already unlocked by the startup login (forcePrompt=true).
     // Startup gate and Settings keep the old behaviour (forcePrompt falsy).
@@ -486,6 +494,9 @@ function ensureAdminAccess(actionCallback, isStartupGate, forcePrompt) {
     if (isStartupGate) startupLoginGateActive = true;
 
     adminPendingCallback = actionCallback;
+    // The Staff Member Login button belongs to the start screen only.
+    const _staffBtn = document.getElementById('staffLoginOpenBtn');
+    if (_staffBtn) _staffBtn.style.display = isStartupGate ? '' : 'none';
     const input = document.getElementById('adminSecurityPasswordInput');
     if (input) input.value = '';
     const modal = document.getElementById('securityModal');
@@ -512,12 +523,11 @@ function verifyAdminPasswordAction(event) {
     const entered = (input ? input.value : '').trim();
     // Empty input must NEVER log in — not even if the stored password is missing.
     if (!entered) { if (input) input.focus(); return; }
-    const savedPassword = localStorage.getItem('ghs_walton_admin_password_v1') || DEFAULT_ADMIN_PASSWORD;
-    // Never log in when the stored password itself is empty/missing.
-    if (!savedPassword) { if (input) input.focus(); return; }
-
-    if (entered === savedPassword) {
+    // Fix #23: the admin pair — General OR Master — unlocks.
+    if (isAdminPasswordValue(entered)) {
         isSystemAdminUnlocked = true;
+        sessionRole = 'admin';
+        applyRoleUi();
         // Save callback BEFORE closeSecurityModal() clears it, so the
         // pending tab (e.g. Data Distribution) actually opens after login.
         const _cb = adminPendingCallback;
@@ -549,9 +559,7 @@ function setupAdminAutoLogin() {
         // Auto-login fires ONLY on a non-empty typed value matching a
         // non-empty stored password — never on page load, never on empty.
         if (!entered) return;
-        const savedPassword = localStorage.getItem('ghs_walton_admin_password_v1') || DEFAULT_ADMIN_PASSWORD;
-        if (!savedPassword) return;
-        if (entered === savedPassword) {
+        if (isAdminPasswordValue(entered)) {
             verifyAdminPasswordAction(null);
         }
     };
@@ -575,9 +583,325 @@ function closeSecurityModal() {
     adminPendingCallback = null;
 }
 
-// Forgot Password OTP Recovery System
+// ===== Fix #23: admin password pair, staff accounts, staff login =====
+const ADMIN_MASTER_KEY = 'ghs_walton_admin_master_v1';
+const EMAILJS_STAFF_TEMPLATE_ID = 'template_51me608';
+function getAdminGeneralPassword() { return localStorage.getItem('ghs_walton_admin_password_v1') || DEFAULT_ADMIN_PASSWORD; }
+function getAdminMasterPassword() {
+    try { return localStorage.getItem(ADMIN_MASTER_KEY) || securityGetMasterPin(); }
+    catch (e) { return 'Walton2026'; }
+}
+function isAdminPasswordValue(v) { return !!v && (v === getAdminGeneralPassword() || v === getAdminMasterPassword()); }
+
+// --- Staff accounts: stored in their OWN cloud node ("accounts" next
+// to data/meta) so they sync to every device and a dataset overwrite
+// can never erase them. A local cache keeps logins possible offline.
+let staffAccountsList = [];
+let staffFlow = { teacher: null, account: null };
+let forgotCtx = null;
+function normalizeMobileKey(m) { return String(m || '').replace(/\D/g, ''); }
+function findTeacherByMobile(m) {
+    const k = normalizeMobileKey(m);
+    if (!k) return null;
+    return (typeof teachersList !== 'undefined' ? teachersList : []).find(t => normalizeMobileKey(t.mobileNumber) === k) || null;
+}
+function findStaffAccountByMobile(m) {
+    const k = normalizeMobileKey(m);
+    if (!k) return null;
+    return staffAccountsList.find(a => normalizeMobileKey(a.mobile) === k) || null;
+}
+function staffCacheLoad() {
+    try { const c = JSON.parse(localStorage.getItem('ghs_walton_staff_accounts_cache') || '[]'); if (Array.isArray(c)) staffAccountsList = c; } catch (e) {}
+}
+async function fetchStaffAccounts() {
+    try {
+        const r = await _mantleGetJson(_fbPath(syncConfig.cloudApiUrl, 'accounts'));
+        if (!r.missing && Array.isArray(r.data)) {
+            staffAccountsList = r.data;
+            try { localStorage.setItem('ghs_walton_staff_accounts_cache', JSON.stringify(staffAccountsList)); } catch (e) {}
+        }
+    } catch (e) {}
+    return staffAccountsList;
+}
+async function pushStaffAccounts() {
+    try { await _mantlePut(_fbPath(syncConfig.cloudApiUrl, 'accounts'), staffAccountsList); } catch (e) {}
+    try { localStorage.setItem('ghs_walton_staff_accounts_cache', JSON.stringify(staffAccountsList)); } catch (e) {}
+}
+function sendStaffCreatedEmail(acc) {
+    try {
+        return fetch('https://api.emailjs.com/api/v1.0/email/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                service_id: EMAILJS_SERVICE_ID,
+                template_id: EMAILJS_STAFF_TEMPLATE_ID,
+                user_id: EMAILJS_PUBLIC_KEY,
+                template_params: { staff_name: acc.name, staff_designation: acc.designation || '', staff_mobile: acc.mobile, staff_email: acc.email, staff_password: acc.password }
+            })
+        }).then(r => r.ok).catch(() => false);
+    } catch (e) { return Promise.resolve(false); }
+}
+
+// --- Staff login UI helpers ---
+function staffErr(id, msg) {
+    const el = document.getElementById(id);
+    if (el) { el.textContent = msg || ''; el.style.display = msg ? 'block' : 'none'; }
+}
+function staffShowStep(id) {
+    document.querySelectorAll('.staff-step').forEach(s => s.classList.add('hidden'));
+    const el = document.getElementById(id);
+    if (el) el.classList.remove('hidden');
+}
+function openStaffLogin() {
+    staffCacheLoad();
+    staffFlow = { teacher: null, account: null };
+    ['staffMobileInput', 'staffEmailInput', 'staffOtpInput', 'staffPassInput', 'staffPassConfirmInput', 'staffLoginPassInput'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+    staffErr('staffMobileErr', ''); staffErr('staffLoginErr', ''); staffErr('staffCreateErr', '');
+    staffShowStep('staffStepMobile');
+    document.getElementById('staffLoginModal').classList.remove('hidden');
+    fetchStaffAccounts();
+    setTimeout(function () { const i = document.getElementById('staffMobileInput'); if (i) i.focus(); }, 50);
+}
+function closeStaffLogin() { document.getElementById('staffLoginModal').classList.add('hidden'); }
+function staffMobileMask(el) {
+    const d = String(el.value || '').replace(/\D/g, '').slice(0, 11);
+    el.value = d.length > 4 ? d.slice(0, 4) + '-' + d.slice(4) : d;
+}
+async function staffContinue() {
+    staffErr('staffMobileErr', '');
+    const mob = document.getElementById('staffMobileInput').value.trim();
+    await fetchStaffAccounts();
+    const teacher = findTeacherByMobile(mob);
+    if (!teacher) {
+        staffErr('staffMobileErr', 'This mobile number is not registered in Teachers & Workload. Please enter the correct mobile number or contact the admin.');
+        return;
+    }
+    staffFlow.teacher = teacher;
+    staffFlow.account = findStaffAccountByMobile(mob);
+    if (staffFlow.account) {
+        document.getElementById('staffLoginName').textContent = teacher.name + ' (' + (teacher.designation || '') + ')';
+        staffShowStep('staffStepLogin');
+        setTimeout(function () { const i = document.getElementById('staffLoginPassInput'); if (i) i.focus(); }, 50);
+    } else {
+        document.getElementById('staffCreateName').value = teacher.name || '';
+        document.getElementById('staffCreateDesignation').value = teacher.designation || '';
+        staffShowStep('staffStepCreate');
+    }
+}
+function staffDoLogin() {
+    staffErr('staffLoginErr', '');
+    const pw = document.getElementById('staffLoginPassInput').value;
+    if (!staffFlow.account || pw !== staffFlow.account.password) {
+        staffErr('staffLoginErr', 'Incorrect password. Please try again or use Forgot Password.');
+        return;
+    }
+    sessionRole = 'staff';
+    currentStaffAccount = staffFlow.account;
+    closeStaffLogin();
+    clearStartupLoginGate();
+    closeSecurityModal();
+    applyRoleUi();
+    showToast('Welcome, ' + staffFlow.account.name + ' (View Only access)');
+}
+function staffSendCreateOtp() {
+    staffErr('staffCreateErr', '');
+    const email = document.getElementById('staffEmailInput').value.trim();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+        staffErr('staffCreateErr', 'Please enter a correct email address.');
+        return;
+    }
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    sessionStorage.setItem('ghs_staff_create_otp', otp);
+    sessionStorage.setItem('ghs_staff_create_email', email);
+    dispatchWebRelayOtp(email, otp);
+    document.getElementById('staffOtpRow').classList.remove('hidden');
+    document.getElementById('staffCreateActions').classList.remove('hidden');
+}
+async function staffCreatePassword() {
+    staffErr('staffCreateErr', '');
+    const otp = document.getElementById('staffOtpInput').value.trim();
+    const savedOtp = sessionStorage.getItem('ghs_staff_create_otp');
+    const email = sessionStorage.getItem('ghs_staff_create_email') || document.getElementById('staffEmailInput').value.trim();
+    const p1 = document.getElementById('staffPassInput').value;
+    const p2 = document.getElementById('staffPassConfirmInput').value;
+    if (!savedOtp || otp !== savedOtp) { staffErr('staffCreateErr', 'Wrong OTP. Please enter the correct code received in your email.'); return; }
+    if (!p1 || p1.length < 4) { staffErr('staffCreateErr', 'Password must be at least 4 characters long.'); return; }
+    if (p1 !== p2) { staffErr('staffCreateErr', 'Password and Confirm Password do not match.'); return; }
+    const t = staffFlow.teacher;
+    if (!t) { staffErr('staffCreateErr', 'Session expired. Please start again.'); return; }
+    const acc = { teacherId: t.id, name: t.name, designation: t.designation || '', mobile: t.mobileNumber, email: email, password: p1, createdAt: new Date().toISOString() };
+    staffAccountsList = staffAccountsList.filter(a => normalizeMobileKey(a.mobile) !== normalizeMobileKey(acc.mobile));
+    staffAccountsList.push(acc);
+    await pushStaffAccounts();
+    sessionStorage.removeItem('ghs_staff_create_otp');
+    sendStaffCreatedEmail(acc);
+    staffFlow.account = acc;
+    staffShowStep('staffStepSuccess');
+}
+function staffSuccessContinue() {
+    const t = staffFlow.teacher;
+    document.getElementById('staffLoginName').textContent = (t ? t.name : '') + ' (' + (t ? (t.designation || '') : '') + ')';
+    staffShowStep('staffStepLogin');
+}
+
+// --- Forgot Password: Admin Access / Staff Member choice ---
+function openForgotChoice() {
+    forgotCtx = null;
+    staffErr('forgotAdminErr', ''); staffErr('forgotStaffErr', '');
+    document.getElementById('forgotAdminForm').classList.add('hidden');
+    document.getElementById('forgotStaffForm').classList.add('hidden');
+    document.getElementById('forgotChoiceBtns').classList.remove('hidden');
+    document.getElementById('forgotChoiceModal').classList.remove('hidden');
+}
+function closeForgotChoice() { document.getElementById('forgotChoiceModal').classList.add('hidden'); }
+function forgotChoose(kind) {
+    document.getElementById('forgotChoiceBtns').classList.add('hidden');
+    document.getElementById('forgotAdminForm').classList.toggle('hidden', kind !== 'admin');
+    document.getElementById('forgotStaffForm').classList.toggle('hidden', kind !== 'staff');
+    if (kind === 'staff') { staffCacheLoad(); fetchStaffAccounts(); }
+}
+function forgotAdminSubmit() {
+    staffErr('forgotAdminErr', '');
+    const email = document.getElementById('forgotAdminEmail').value.trim().toLowerCase();
+    if (email !== String(SECURITY_EMAIL).toLowerCase()) {
+        staffErr('forgotAdminErr', 'Please enter the correct email or contact to admin GHS Walton Lahore');
+        return;
+    }
+    forgotCtx = { kind: 'admin' };
+    closeForgotChoice();
+    adminForgotStart();
+}
+async function forgotStaffSubmit() {
+    staffErr('forgotStaffErr', '');
+    const email = document.getElementById('forgotStaffEmail').value.trim().toLowerCase();
+    const mob = document.getElementById('forgotStaffMobile').value.trim();
+    await fetchStaffAccounts();
+    const acc = findStaffAccountByMobile(mob);
+    // No account yet (password never created) or email mismatch: no OTP.
+    if (!acc || String(acc.email || '').toLowerCase() !== email) {
+        staffErr('forgotStaffErr', 'Please Enter the Correct Mobile Number');
+        return;
+    }
+    forgotCtx = { kind: 'staff', account: acc };
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    sessionStorage.setItem('ghs_staff_recovery_otp', otp);
+    dispatchWebRelayOtp(acc.email, otp);
+    closeForgotChoice();
+    ['staffResetOtp', 'staffResetPass', 'staffResetPassConfirm'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+    staffErr('staffResetErr', '');
+    document.getElementById('staffResetModal').classList.remove('hidden');
+}
+async function verifyStaffReset(event) {
+    if (event) event.preventDefault();
+    staffErr('staffResetErr', '');
+    const otp = document.getElementById('staffResetOtp').value.trim();
+    const savedOtp = sessionStorage.getItem('ghs_staff_recovery_otp');
+    const p1 = document.getElementById('staffResetPass').value;
+    const p2 = document.getElementById('staffResetPassConfirm').value;
+    if (!savedOtp || otp !== savedOtp) { staffErr('staffResetErr', 'Wrong OTP. Please enter the correct code received in your email.'); return; }
+    if (!p1 || p1.length < 4) { staffErr('staffResetErr', 'Password must be at least 4 characters long.'); return; }
+    if (p1 !== p2) { staffErr('staffResetErr', 'Password and Confirm Password do not match.'); return; }
+    if (forgotCtx && forgotCtx.account) {
+        forgotCtx.account.password = p1;
+        await pushStaffAccounts();
+    }
+    sessionStorage.removeItem('ghs_staff_recovery_otp');
+    document.getElementById('staffResetModal').classList.add('hidden');
+    showToast('Your password has been reset successfully. Please login with the new password.');
+}
+function resendForgotOtp() {
+    if (forgotCtx && forgotCtx.kind === 'staff' && forgotCtx.account) {
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        sessionStorage.setItem('ghs_staff_recovery_otp', otp);
+        dispatchWebRelayOtp(forgotCtx.account.email, otp);
+    } else {
+        adminForgotStart();
+    }
+}
+
+// --- Settings: change the Master password (OTP on the admin email) ---
+function sendMasterChangeOtp() {
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    sessionStorage.setItem('ghs_master_change_otp', otp);
+    dispatchWebRelayOtp(SECURITY_EMAIL, otp);
+    document.getElementById('masterOtpRow').classList.remove('hidden');
+    showToast('OTP has been sent to the admin email.');
+}
+function changeMasterPasswordAction() {
+    const otp = (document.getElementById('settingsMasterOtp')?.value || '').trim();
+    const newPass = (document.getElementById('settingsMasterNew')?.value || '').trim();
+    const confPass = (document.getElementById('settingsMasterConfirm')?.value || '').trim();
+    const savedOtp = sessionStorage.getItem('ghs_master_change_otp');
+    if (!savedOtp || otp !== savedOtp) { alert('Wrong OTP! Please enter the correct code received on the admin email.'); return; }
+    if (!newPass || newPass.length < 4) { alert('The new Master password must be at least 4 characters long.'); return; }
+    if (newPass !== confPass) { alert('The new Master password and confirmation password do not match!'); return; }
+    localStorage.setItem(ADMIN_MASTER_KEY, newPass);
+    sessionStorage.removeItem('ghs_master_change_otp');
+    ['settingsMasterOtp', 'settingsMasterNew', 'settingsMasterConfirm'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+    document.getElementById('masterOtpRow').classList.add('hidden');
+    showToast('Master password changed successfully!');
+}
+
+// --- Role UI + the staff view-only lockdown ---
+function applyRoleUi() {
+    const card = document.getElementById('controlPanelCard');
+    if (card) card.style.display = isStaffSession() ? 'none' : '';
+    // The Control Panel nav button (Data Distribution tab) is hidden
+    // for staff too — only admin logins ever see a Control Panel button.
+    const navBtn = document.querySelector('.tab-btn[data-tab="distribution"]');
+    if (navBtn) navBtn.style.display = isStaffSession() ? 'none' : '';
+    if (isStaffSession()) enforceStaffLockdown();
+}
+const STAFF_BLOCK_ONCLICK = /(save|add|edit|delete|remove|generate|adjust|import|upload|restore|freeze|assign|create|update|clear|shuffle|submit|send)/i;
+const STAFF_ALLOW_ONCLICK = /(switchTab|print|export|share|slip|view|download)/i;
+function enforceStaffLockdown() {
+    if (!isStaffSession()) return;
+    document.querySelectorAll('section[id^="tab-"] input, section[id^="tab-"] select, section[id^="tab-"] textarea').forEach(el => {
+        if (el.dataset.viewAllow === '1' || el.closest('[data-view-allow]')) return;
+        if (el.tagName === 'SELECT' && /(view|slip|class|teacher|period)/i.test(el.id || '')) return;
+        if (el.tagName === 'INPUT' && /(search|filter)/i.test(el.id || '')) return;
+        el.disabled = true;
+    });
+    document.querySelectorAll('section[id^="tab-"] button').forEach(btn => {
+        const oc = btn.getAttribute('onclick') || '';
+        if (STAFF_ALLOW_ONCLICK.test(oc)) return;
+        if (STAFF_BLOCK_ONCLICK.test(oc)) { btn.disabled = true; btn.style.opacity = '0.45'; }
+    });
+    // Edit dialogs live at body level and are filled when opened —
+    // disable everything inside them for staff as well (only Close /
+    // Cancel and print-type buttons stay usable).
+    const STAFF_EDIT_MODALS = ['autoAdjustModal', 'bellAdjustModal', 'bellTimingEditModal', 'classModal', 'columnModal', 'fixPeriodModal', 'fixedPeriodsListModal', 'multiGroupModal', 'removeColumnModal', 'settingsModal', 'softwareRulesModal', 'staffModal', 'teacherModal', 'cloudSyncModal'];
+    STAFF_EDIT_MODALS.forEach(function (mid) {
+        const m = document.getElementById(mid);
+        if (!m) return;
+        m.querySelectorAll('input, select, textarea').forEach(el => { el.disabled = true; });
+        m.querySelectorAll('button').forEach(btn => {
+            const oc = btn.getAttribute('onclick') || '';
+            if (/(close|hide|cancel)/i.test(oc)) return;
+            if (STAFF_ALLOW_ONCLICK.test(oc)) return;
+            btn.disabled = true;
+            btn.style.opacity = '0.45';
+        });
+    });
+}
+// Self-healing: dialogs and lists are rendered when opened, so after
+// any click in a staff session the lockdown is re-applied once the
+// click's own rendering has settled.
+document.addEventListener('click', function () {
+    if (typeof isStaffSession === 'function' && isStaffSession()) {
+        setTimeout(function () { try { enforceStaffLockdown(); } catch (e) {} }, 0);
+    }
+}, true);
+
+// Forgot Password OTP Recovery System — Fix #23: the menu first asks
+// Admin Access or Staff Member; the original admin flow lives on in
+// adminForgotStart().
 function triggerForgotPasswordOtp() {
     closeSecurityModal();
+    openForgotChoice();
+}
+
+function adminForgotStart() {
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     sessionStorage.setItem('ghs_walton_recovery_otp', otp);
 
@@ -701,7 +1025,7 @@ function verifyOtpAndSetNewPassword(event) {
 // the existing OTP endpoint (same as the OTP recovery system).
 const SECURITY_MASTER_PIN = "Walton2026";
 const SECURITY_EMAIL = "asifjaved81@gmail.com";
-const SECURITY_EXPECTED_APPJS_HASH = "f9f6fd98"; // __SECURITY_HASH_LINE__ (replaced at build time)
+const SECURITY_EXPECTED_APPJS_HASH = "910b0239"; // __SECURITY_HASH_LINE__ (replaced at build time)
 let securityTamperDetected = false;
 let securitySessionPin = null;
 
@@ -1171,6 +1495,8 @@ function loadData() {
 }
 
 function saveData() {
+    // Fix #23: a staff (view-only) session can never save data.
+    if (typeof isStaffSession === 'function' && isStaffSession()) return;
     try {
         localStorage.setItem('ghs_walton_settings_v3', JSON.stringify(appSettings));
         localStorage.setItem('ghs_walton_teachers_v3', JSON.stringify(teachersList));
@@ -1562,7 +1888,56 @@ function renderAllViews() {
     renderClassWiseTable();
     renderStaffStatementView();
     renderOfflineFilesList();
+    try { initStickyHScrollbars(); } catch (e) {}
+    try { if (isStaffSession()) enforceStaffLockdown(); } catch (e) {}
 }
+
+// Fix #23 Task 2: sticky horizontal scroll strip for the two widest
+// views only — the Staff Statement table and the Full Time Table. The
+// strip stays pinned to the bottom of the screen while its table is on
+// screen, so the full data can be scrolled left/right from anywhere
+// instead of travelling to the very end of the table first.
+let _stickyHScrollRegistry = [];
+function _ensureStickyHScrollStyle() {
+    if (document.getElementById('stickyHScrollStyle')) return;
+    const st = document.createElement('style');
+    st.id = 'stickyHScrollStyle';
+    st.textContent = '.sticky-hscroll{position:sticky;bottom:0;z-index:30;overflow-x:auto;overflow-y:hidden;height:18px;background:#f1f5f9;border-top:2px solid #cbd5e1}.sticky-hscroll>div{height:1px}@media print{.sticky-hscroll{display:none!important}}';
+    document.head.appendChild(st);
+}
+function setupStickyHScroll(scroller) {
+    if (!scroller) return;
+    if (scroller.dataset.stickyBound === '1') { refreshStickyHScroll(scroller); return; }
+    scroller.dataset.stickyBound = '1';
+    _ensureStickyHScrollStyle();
+    const bar = document.createElement('div');
+    bar.className = 'sticky-hscroll';
+    bar.style.display = 'none';
+    const inner = document.createElement('div');
+    bar.appendChild(inner);
+    scroller.insertAdjacentElement('afterend', bar);
+    let syncing = false;
+    scroller.addEventListener('scroll', function () { if (syncing) return; syncing = true; bar.scrollLeft = scroller.scrollLeft; syncing = false; }, { passive: true });
+    bar.addEventListener('scroll', function () { if (syncing) return; syncing = true; scroller.scrollLeft = bar.scrollLeft; syncing = false; }, { passive: true });
+    scroller._stickyBar = bar;
+    scroller._stickyInner = inner;
+    _stickyHScrollRegistry.push(scroller);
+    refreshStickyHScroll(scroller);
+}
+function refreshStickyHScroll(scroller) {
+    if (!scroller || !scroller._stickyBar) return;
+    scroller._stickyInner.style.width = scroller.scrollWidth + 'px';
+    scroller._stickyBar.style.display = (scroller.scrollWidth > scroller.clientWidth + 4) ? 'block' : 'none';
+    scroller._stickyBar.scrollLeft = scroller.scrollLeft;
+}
+function initStickyHScrollbars() {
+    const master = document.getElementById('printable-master-area');
+    if (master) setupStickyHScroll(master);
+    const staffTable = document.getElementById('staffStatementMainTable');
+    if (staffTable && staffTable.parentElement) setupStickyHScroll(staffTable.parentElement);
+    _stickyHScrollRegistry.forEach(refreshStickyHScroll);
+}
+window.addEventListener('resize', function () { try { _stickyHScrollRegistry.forEach(refreshStickyHScroll); } catch (e) {} });
 
 // ==========================================
 // AUTO-ARCHIVE ENGINE (SINGLE ENTRY PER DAY)
@@ -4465,6 +4840,32 @@ function bellTimeShareWhatsApp() {
         showToast('Bell timings PNG downloaded — WhatsApp opened.');
     } catch (e) { console.warn('Bell Time Share WhatsApp failed', e); showToast('Bell timings share failed.'); }
 }
+// Fix #23 Task 1: AM/PM auto-set from the hour (Asif's confirmed rule:
+// 7-11 = AM, 12 and 1-6 = PM). Whatever meridiem was typed, the saved
+// value is rewritten from the hour, so a bare "1:05" can never again be
+// stored as 1:05 AM. A 24-hour entry (13:05) is converted too.
+function autoMeridiemForHour(h) {
+    if (h >= 7 && h <= 11) return 'AM';
+    return 'PM';
+}
+function normalizeBellTimeString(str) {
+    const s = String(str || '');
+    const m = s.match(/(\d{1,2})\s*[:.]\s*(\d{2})/);
+    if (!m) return s;
+    let h = parseInt(m[1], 10);
+    if (h > 12) h -= 12;
+    if (h === 0) h = 12;
+    return h + ':' + m[2] + ' ' + autoMeridiemForHour(h);
+}
+function normalizeBellTimeField(el) {
+    if (!el) return;
+    const v = normalizeBellTimeString(el.value);
+    if (v) el.value = v;
+}
+function normalizeBreakTimingString(str) {
+    return String(str || '').replace(/(\d{1,2})\s*[:.]\s*(\d{2})/g, function (mm) { return normalizeBellTimeString(mm); });
+}
+
 function openEditBellTimingsModal() {
     const container = document.getElementById('bellTimingModalInputs');
     if (!container) return;
@@ -4475,9 +4876,9 @@ function openEditBellTimingsModal() {
             <div class="flex items-center gap-2 p-2 bg-slate-50 rounded-lg border border-slate-200">
                 <span class="w-24 font-bold text-blue-900 text-xs">${p.name}:</span>
                 <div class="flex-1 flex items-center gap-1.5">
-                    <input type="text" id="modal_p_start_${p.id}" value="${p.startTime}" class="w-full border border-slate-300 rounded px-2 py-1 font-mono text-xs" required placeholder="Start Time">
+                    <input type="text" id="modal_p_start_${p.id}" value="${p.startTime}" onchange="normalizeBellTimeField(this)" class="w-full border border-slate-300 rounded px-2 py-1 font-mono text-xs" required placeholder="Start Time">
                     <span class="text-slate-400 font-bold">-</span>
-                    <input type="text" id="modal_p_end_${p.id}" value="${p.endTime}" class="w-full border border-slate-300 rounded px-2 py-1 font-mono text-xs" required placeholder="End Time">
+                    <input type="text" id="modal_p_end_${p.id}" value="${p.endTime}" onchange="normalizeBellTimeField(this)" class="w-full border border-slate-300 rounded px-2 py-1 font-mono text-xs" required placeholder="End Time">
                 </div>
             </div>
         `;
@@ -4501,13 +4902,19 @@ function saveBellTimingsFromModal(e) {
     archiveCurrentSchedule("Bell Timings Modification");
 
     appSettings.periods.forEach(p => {
-        const start = document.getElementById(`modal_p_start_${p.id}`).value.trim();
-        const end = document.getElementById(`modal_p_end_${p.id}`).value.trim();
+        const sEl = document.getElementById(`modal_p_start_${p.id}`);
+        const eEl = document.getElementById(`modal_p_end_${p.id}`);
+        normalizeBellTimeField(sEl);
+        normalizeBellTimeField(eEl);
+        const start = sEl.value.trim();
+        const end = eEl.value.trim();
         if (start) p.startTime = start;
         if (end) p.endTime = end;
     });
 
-    const breakVal = document.getElementById('modalBreakTiming').value.trim();
+    const breakEl = document.getElementById('modalBreakTiming');
+    const breakVal = normalizeBreakTimingString(breakEl.value.trim());
+    breakEl.value = breakVal;
     if (breakVal) {
         appSettings.breakTiming = breakVal;
     }
@@ -4532,11 +4939,11 @@ function initPeriodsGrid() {
             </div>
             <div class="space-y-1">
                 <label class="text-[10px] text-slate-500">Start Time:</label>
-                <input type="text" id="p_start_${p.id}" value="${p.startTime}" class="w-full border border-slate-300 rounded px-2 py-1 text-xs">
+                <input type="text" id="p_start_${p.id}" value="${p.startTime}" onchange="normalizeBellTimeField(this)" class="w-full border border-slate-300 rounded px-2 py-1 text-xs">
             </div>
             <div class="space-y-1">
                 <label class="text-[10px] text-slate-500">End Time:</label>
-                <input type="text" id="p_end_${p.id}" value="${p.endTime}" class="w-full border border-slate-300 rounded px-2 py-1 text-xs">
+                <input type="text" id="p_end_${p.id}" value="${p.endTime}" onchange="normalizeBellTimeField(this)" class="w-full border border-slate-300 rounded px-2 py-1 text-xs">
             </div>
         </div>
     `).join('');
@@ -4545,8 +4952,12 @@ function initPeriodsGrid() {
 function savePeriodTimings() {
     archiveCurrentSchedule("Timings Modification");
     appSettings.periods.forEach(p => {
-        const start = document.getElementById(`p_start_${p.id}`).value.trim();
-        const end = document.getElementById(`p_end_${p.id}`).value.trim();
+        const sEl = document.getElementById(`p_start_${p.id}`);
+        const eEl = document.getElementById(`p_end_${p.id}`);
+        normalizeBellTimeField(sEl);
+        normalizeBellTimeField(eEl);
+        const start = sEl.value.trim();
+        const end = eEl.value.trim();
         if (start) p.startTime = start;
         if (end) p.endTime = end;
     });
@@ -8559,7 +8970,7 @@ function changeAdminPasswordAction() {
 
     const savedPass = localStorage.getItem('ghs_walton_admin_password_v1') || DEFAULT_ADMIN_PASSWORD;
 
-    if (curPass !== savedPass) {
+    if (!isAdminPasswordValue(curPass)) {
         alert("The current password is not correct!");
         return;
     }
@@ -8727,7 +9138,7 @@ const DEFAULT_CLOUD_API_URL = "https://ghswalton-ecfa1-default-rtdb.firebaseio.c
 // Fix #21: cloud data lives in the school's own Google Firebase
 // Realtime Database (free Spark plan). The secret node name in the
 // path is the access key: database rules open that node only.
-const HOSTED_BUILD_ID = "20261106-22";
+const HOSTED_BUILD_ID = "20261106-23";
 // Fix #11: the verified cloud dataset is pinned by content hash;
 // its descendants carry this generation number.
 const PINNED_CLOUD_HASH = "c91dc69b3710fd63:261696";
@@ -9337,6 +9748,8 @@ function dismissSyncBanner() {
 
 let _syncDebounceTimer = null;
 function triggerBackgroundSync(data, force = false) {
+    // Fix #23: a staff (view-only) session never pushes to the cloud.
+    if (typeof isStaffSession === 'function' && isStaffSession()) return;
     let dataset = data || getFullSystemDataset();
     dataset.lastModifiedTimestamp = Date.now();
 

@@ -256,7 +256,7 @@
             <!-- 6 FEATURE THUMBNAIL CARDS GRID (DASHBOARD) -->
             <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
                 <!-- 1. DATA DISTRIBUTION (MAIN ENGINE) -->
-                <div class="bg-gradient-to-br from-indigo-50 to-white p-5 rounded-2xl border-2 border-indigo-200 shadow-sm hover:shadow-md transition flex flex-col justify-between gap-4">
+                <div id="controlPanelCard" class="bg-gradient-to-br from-indigo-50 to-white p-5 rounded-2xl border-2 border-indigo-200 shadow-sm hover:shadow-md transition flex flex-col justify-between gap-4">
                     <div>
                         <div class="flex items-center justify-between">
                             <span class="w-12 h-12 rounded-xl bg-indigo-600 text-white flex items-center justify-center text-xl shadow">
@@ -2322,7 +2322,7 @@
                 <div class="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3">
                     <h4 class="font-bold text-sm text-slate-800 flex items-center gap-1.5">
                         <i class="fa-solid fa-lock text-amber-600"></i>
-                        <span>2. Change Admin Security Password</span>
+                        <span>2. Change General Password (Admin)</span>
                     </h4>
                     <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
                         <div>
@@ -2341,6 +2341,39 @@
                     <div class="flex justify-end">
                         <button onclick="changeAdminPasswordAction()" class="bg-amber-500 hover:bg-amber-600 text-slate-950 font-black py-1.5 px-4 rounded-lg shadow transition">
                             <i class="fa-solid fa-key mr-1"></i> Update Password
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Section 2B: Master Password (Fix #23) -->
+                <div class="bg-red-50 p-4 rounded-xl border border-red-200 space-y-3">
+                    <h4 class="font-bold text-sm text-slate-800 flex items-center gap-1.5">
+                        <i class="fa-solid fa-user-shield text-red-600"></i>
+                        <span>2B. Change Master Password (OTP Required)</span>
+                    </h4>
+                    <p class="text-[11px] text-slate-600 font-semibold leading-relaxed">The Master Password is the admin's highest password. The same General / Master pair works on the start screen and in the Control Panel. Changing the Master Password needs the OTP sent to the admin email (asifjaved81@gmail.com).</p>
+                    <div class="flex justify-end">
+                        <button onclick="sendMasterChangeOtp()" class="bg-red-600 hover:bg-red-700 text-white font-black py-1.5 px-4 rounded-lg shadow transition">
+                            <i class="fa-solid fa-paper-plane mr-1"></i> Send OTP to Admin Email
+                        </button>
+                    </div>
+                    <div id="masterOtpRow" class="hidden grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div>
+                            <label class="block font-bold text-slate-700 mb-1">OTP (from email):</label>
+                            <input type="text" id="settingsMasterOtp" maxlength="6" placeholder="6-digit OTP" class="w-full border border-slate-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-red-500">
+                        </div>
+                        <div>
+                            <label class="block font-bold text-slate-700 mb-1">New Master Password:</label>
+                            <input type="password" id="settingsMasterNew" placeholder="New Master Password" class="w-full border border-slate-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-red-500">
+                        </div>
+                        <div>
+                            <label class="block font-bold text-slate-700 mb-1">Confirm Master Password:</label>
+                            <input type="password" id="settingsMasterConfirm" placeholder="Enter again" class="w-full border border-slate-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-red-500">
+                        </div>
+                    </div>
+                    <div class="flex justify-end">
+                        <button onclick="changeMasterPasswordAction()" class="bg-red-600 hover:bg-red-700 text-white font-black py-1.5 px-4 rounded-lg shadow transition">
+                            <i class="fa-solid fa-key mr-1"></i> Update Master Password
                         </button>
                     </div>
                 </div>
@@ -2450,6 +2483,146 @@
                     <button type="submit" class="flex-1 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-extrabold shadow">Unlock</button>
                 </div>
             </form>
+            <div id="staffLoginOpenBtn" class="pt-1">
+                <button type="button" onclick="openStaffLogin()" class="w-full py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold shadow text-xs"><i class="fa-solid fa-user-graduate mr-1"></i> Staff Member Login</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: STAFF MEMBER LOGIN (Fix #23) -->
+    <div id="staffLoginModal" class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 space-y-4 relative">
+            <button type="button" onclick="closeStaffLogin()" class="absolute top-3 right-3 text-slate-400 hover:text-slate-700 text-xl font-bold">&times;</button>
+            <div class="text-center">
+                <div class="w-14 h-14 bg-emerald-100 text-emerald-600 rounded-2xl flex items-center justify-center mx-auto text-2xl shadow-inner">
+                    <i class="fa-solid fa-user-graduate"></i>
+                </div>
+                <h3 class="text-base font-extrabold text-slate-900 mt-2">Staff Member Login</h3>
+                <p class="text-xs text-slate-500 mt-1">Staff members get View Only access to the website data.</p>
+            </div>
+            <div class="staff-step space-y-3" id="staffStepMobile">
+                <div>
+                    <label class="block font-bold text-slate-700 text-xs mb-1">Your Mobile Number (registered in Teachers &amp; Workload):</label>
+                    <input type="text" id="staffMobileInput" inputmode="numeric" placeholder="0324-1234567" maxlength="12" oninput="staffMobileMask(this)" class="w-full border-2 border-slate-300 rounded-xl px-3 py-2.5 text-center text-sm font-bold focus:ring-2 focus:ring-emerald-500">
+                    <p id="staffMobileErr" class="text-red-600 text-[11px] font-bold mt-1.5" style="display:none"></p>
+                </div>
+                <button type="button" onclick="staffContinue()" class="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold shadow text-xs">Continue</button>
+            </div>
+            <div class="staff-step space-y-3 hidden" id="staffStepLogin">
+                <p class="text-xs font-extrabold text-slate-800 text-center" id="staffLoginName"></p>
+                <div>
+                    <label class="block font-bold text-slate-700 text-xs mb-1">Your Password:</label>
+                    <input type="password" id="staffLoginPassInput" placeholder="Enter your password" class="w-full border-2 border-slate-300 rounded-xl px-3 py-2.5 text-center text-sm font-bold focus:ring-2 focus:ring-emerald-500">
+                    <p id="staffLoginErr" class="text-red-600 text-[11px] font-bold mt-1.5" style="display:none"></p>
+                </div>
+                <button type="button" onclick="staffDoLogin()" class="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold shadow text-xs">Login (View Only)</button>
+                <button type="button" onclick="staffShowStep('staffStepMobile')" class="w-full py-2 rounded-xl border border-slate-300 text-slate-700 font-bold hover:bg-slate-100 text-xs">Use another mobile number</button>
+            </div>
+            <div class="staff-step space-y-3 hidden" id="staffStepCreate">
+                <div>
+                    <label class="block font-bold text-slate-700 text-xs mb-1">Name:</label>
+                    <input type="text" id="staffCreateName" readonly class="w-full border border-slate-200 bg-slate-50 rounded-xl px-3 py-2 text-xs font-bold text-slate-700">
+                </div>
+                <div>
+                    <label class="block font-bold text-slate-700 text-xs mb-1">Designation:</label>
+                    <input type="text" id="staffCreateDesignation" readonly class="w-full border border-slate-200 bg-slate-50 rounded-xl px-3 py-2 text-xs font-bold text-slate-700">
+                </div>
+                <div>
+                    <label class="block font-bold text-slate-700 text-xs mb-1">Enter Email:</label>
+                    <input type="email" id="staffEmailInput" placeholder="yourname@gmail.com" class="w-full border-2 border-slate-300 rounded-xl px-3 py-2 text-xs font-bold focus:ring-2 focus:ring-emerald-500">
+                </div>
+                <button type="button" onclick="staffSendCreateOtp()" class="w-full py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-extrabold shadow text-xs">Send OTP to my Email</button>
+                <div id="staffOtpRow" class="hidden">
+                    <label class="block font-bold text-slate-700 text-xs mb-1">Enter OTP (received in your email):</label>
+                    <input type="text" id="staffOtpInput" maxlength="6" placeholder="______" class="w-full border-2 border-blue-400 rounded-xl px-3 py-2 text-center text-lg font-mono tracking-widest font-black focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div id="staffCreateActions" class="hidden space-y-3">
+                    <div>
+                        <label class="block font-bold text-slate-700 text-xs mb-1">Enter Your Password:</label>
+                        <input type="password" id="staffPassInput" placeholder="New password" class="w-full border-2 border-slate-300 rounded-xl px-3 py-2 text-xs font-bold focus:ring-2 focus:ring-emerald-500">
+                    </div>
+                    <div>
+                        <label class="block font-bold text-slate-700 text-xs mb-1">Confirm Your Password:</label>
+                        <input type="password" id="staffPassConfirmInput" placeholder="Enter again" class="w-full border-2 border-slate-300 rounded-xl px-3 py-2 text-xs font-bold focus:ring-2 focus:ring-emerald-500">
+                    </div>
+                    <button type="button" onclick="staffCreatePassword()" class="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold shadow text-xs">Create My Password</button>
+                </div>
+                <p id="staffCreateErr" class="text-red-600 text-[11px] font-bold" style="display:none"></p>
+            </div>
+            <div class="staff-step space-y-3 hidden" id="staffStepSuccess">
+                <div class="bg-emerald-50 border-2 border-emerald-300 text-emerald-800 rounded-xl p-3.5 text-center text-sm font-extrabold">You have successfully created your password</div>
+                <button type="button" onclick="staffSuccessContinue()" class="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold shadow text-xs">Continue to Login</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: FORGOT PASSWORD CHOICE (Fix #23) -->
+    <div id="forgotChoiceModal" class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 space-y-4 relative">
+            <button type="button" onclick="closeForgotChoice()" class="absolute top-3 right-3 text-slate-400 hover:text-slate-700 text-xl font-bold">&times;</button>
+            <div class="text-center">
+                <div class="w-14 h-14 bg-blue-100 text-blue-600 rounded-2xl flex items-center justify-center mx-auto text-2xl shadow-inner">
+                    <i class="fa-solid fa-key"></i>
+                </div>
+                <h3 class="text-base font-extrabold text-slate-900 mt-2">Forgot Password</h3>
+                <p class="text-xs text-slate-500 mt-1">Please select your access type.</p>
+            </div>
+            <div id="forgotChoiceBtns" class="space-y-2">
+                <button type="button" onclick="forgotChoose('admin')" class="w-full py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-extrabold shadow text-xs"><i class="fa-solid fa-user-shield mr-1"></i> Admin Access</button>
+                <button type="button" onclick="forgotChoose('staff')" class="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold shadow text-xs"><i class="fa-solid fa-user-graduate mr-1"></i> Staff Member</button>
+            </div>
+            <form id="forgotAdminForm" class="hidden space-y-3" onsubmit="event.preventDefault(); forgotAdminSubmit();">
+                <div>
+                    <label class="block font-bold text-slate-700 text-xs mb-1">Admin Email:</label>
+                    <input type="email" id="forgotAdminEmail" placeholder="Admin email address" class="w-full border-2 border-slate-300 rounded-xl px-3 py-2 text-xs font-bold focus:ring-2 focus:ring-red-500">
+                    <p id="forgotAdminErr" class="text-red-600 text-[11px] font-bold mt-1.5" style="display:none"></p>
+                </div>
+                <button type="submit" class="w-full py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-extrabold shadow text-xs">Send OTP</button>
+            </form>
+            <form id="forgotStaffForm" class="hidden space-y-3" onsubmit="event.preventDefault(); forgotStaffSubmit();">
+                <div>
+                    <label class="block font-bold text-slate-700 text-xs mb-1">Your Email (used when creating your password):</label>
+                    <input type="email" id="forgotStaffEmail" placeholder="yourname@gmail.com" class="w-full border-2 border-slate-300 rounded-xl px-3 py-2 text-xs font-bold focus:ring-2 focus:ring-emerald-500">
+                </div>
+                <div>
+                    <label class="block font-bold text-slate-700 text-xs mb-1">Registered Mobile Number:</label>
+                    <input type="text" id="forgotStaffMobile" inputmode="numeric" placeholder="0324-1234567" maxlength="12" oninput="staffMobileMask(this)" class="w-full border-2 border-slate-300 rounded-xl px-3 py-2 text-center text-sm font-bold focus:ring-2 focus:ring-emerald-500">
+                    <p id="forgotStaffErr" class="text-red-600 text-[11px] font-bold mt-1.5" style="display:none"></p>
+                </div>
+                <button type="submit" class="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold shadow text-xs">Send OTP</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- MODAL: STAFF PASSWORD RESET (Fix #23) -->
+    <div id="staffResetModal" class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 space-y-4 relative">
+            <div class="text-center">
+                <div class="w-14 h-14 bg-blue-100 text-blue-600 rounded-2xl flex items-center justify-center mx-auto text-2xl shadow-inner">
+                    <i class="fa-solid fa-shield-keyhole"></i>
+                </div>
+                <h3 class="text-base font-extrabold text-slate-900 mt-2">Reset Staff Password</h3>
+                <p class="text-xs text-slate-500 mt-1">Enter the OTP sent to your email and set a new password.</p>
+            </div>
+            <form onsubmit="verifyStaffReset(event)" class="space-y-3">
+                <div>
+                    <label class="block font-bold text-slate-700 text-xs mb-1">6-Digit OTP:</label>
+                    <input type="text" id="staffResetOtp" maxlength="6" placeholder="______" class="w-full border-2 border-blue-400 rounded-xl px-3 py-2 text-center text-lg font-mono tracking-widest font-black focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div>
+                    <label class="block font-bold text-slate-700 text-xs mb-1">New Password:</label>
+                    <input type="password" id="staffResetPass" placeholder="New password" class="w-full border-2 border-slate-300 rounded-xl px-3 py-2 text-xs font-bold focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div>
+                    <label class="block font-bold text-slate-700 text-xs mb-1">Confirm New Password:</label>
+                    <input type="password" id="staffResetPassConfirm" placeholder="Enter again" class="w-full border-2 border-slate-300 rounded-xl px-3 py-2 text-xs font-bold focus:ring-2 focus:ring-blue-500">
+                </div>
+                <p id="staffResetErr" class="text-red-600 text-[11px] font-bold" style="display:none"></p>
+                <div class="flex gap-2 pt-1">
+                    <button type="button" onclick="document.getElementById('staffResetModal').classList.add('hidden')" class="flex-1 py-2 rounded-xl border border-slate-300 text-slate-700 font-bold hover:bg-slate-100 text-xs">Cancel</button>
+                    <button type="submit" class="flex-1 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-extrabold shadow text-xs">Reset Password</button>
+                </div>
+            </form>
         </div>
     </div>
 
@@ -2488,7 +2661,7 @@
                 <div>
                     <div class="flex items-center justify-between mb-1">
                         <label class="font-bold text-slate-700">6-Digit Security OTP (code received in Gmail):</label>
-                        <button type="button" onclick="triggerForgotPasswordOtp()" class="text-blue-600 hover:text-blue-800 text-[11px] font-bold underline">
+                        <button type="button" onclick="resendForgotOtp()" class="text-blue-600 hover:text-blue-800 text-[11px] font-bold underline">
                             Resend
                         </button>
                     </div>
