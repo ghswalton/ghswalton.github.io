@@ -231,6 +231,64 @@ let currentEmailAdmin = null;
 let currentEmailMember = null;
 function isStaffSession() { return sessionRole === 'staff'; }
 function isChiefAdminSession() { return sessionRole === 'admin' && isChiefAdmin; }
+// ===== Fix #27: login session persistence (survives page refresh) =====
+// Only the identity is stored — never a password. On boot the saved
+// identity is re-validated against the cloud account lists, so a
+// blocked or removed account is NOT restored. The Control Panel
+// unlock flag (isSystemAdminUnlocked) stays in-memory only and is
+// deliberately never restored: after a refresh the Control Panel
+// still asks for its password.
+const LOGIN_SESSION_KEY = 'ghs_walton_login_session_v1';
+function saveLoginSession() {
+    try {
+        let s = null;
+        if (sessionRole === 'admin' && isChiefAdmin) s = { v: 1, role: 'admin', chief: true };
+        else if (sessionRole === 'admin' && currentEmailAdmin) s = { v: 1, role: 'admin', chief: false, email: currentEmailAdmin.email };
+        else if (sessionRole === 'staff' && currentStaffAccount) s = { v: 1, role: 'staff', mobile: currentStaffAccount.mobile };
+        else if (sessionRole === 'staff' && currentEmailMember) s = { v: 1, role: 'staff', email: currentEmailMember.email };
+        if (s) localStorage.setItem(LOGIN_SESSION_KEY, JSON.stringify(s));
+    } catch (e) {}
+}
+function clearLoginSession() { try { localStorage.removeItem(LOGIN_SESSION_KEY); } catch (e) {} }
+function logoutApp() {
+    clearLoginSession();
+    location.reload();
+}
+async function restoreLoginSession() {
+    let s = null;
+    try { s = JSON.parse(localStorage.getItem(LOGIN_SESSION_KEY) || 'null'); } catch (e) {}
+    if (!s || !s.role) return false;
+    try {
+        if (s.role === 'admin' && s.chief) {
+            sessionRole = 'admin';
+            isChiefAdmin = true;
+            currentEmailAdmin = null;
+        } else if (s.role === 'admin' && s.email) {
+            await fetchAccess();
+            const rec = findAccessRecord('admins', s.email);
+            if (!rec || rec.status !== 'active' || isEmailBlocked(s.email)) { clearLoginSession(); return false; }
+            sessionRole = 'admin';
+            isChiefAdmin = false;
+            currentEmailAdmin = rec;
+        } else if (s.role === 'staff' && s.mobile) {
+            await fetchStaffAccounts();
+            await fetchAccess();
+            const acc = findStaffAccountByMobile(s.mobile);
+            if (!acc || isEmailBlocked(acc.email)) { clearLoginSession(); return false; }
+            sessionRole = 'staff';
+            currentStaffAccount = acc;
+        } else if (s.role === 'staff' && s.email) {
+            await fetchAccess();
+            const rec = findAccessRecord('grants', s.email);
+            if (!rec || rec.status !== 'active' || isEmailBlocked(s.email)) { clearLoginSession(); return false; }
+            sessionRole = 'staff';
+            currentEmailMember = rec;
+            currentStaffAccount = null;
+        } else { clearLoginSession(); return false; }
+    } catch (e) { return false; }
+    applyRoleUi();
+    return true;
+}
 
 // Modern Toast Notification Utility
 function showToast(msg) {
@@ -532,10 +590,16 @@ function verifyAdminPasswordAction(event) {
     // Fix #23: the admin pair — General OR Master — unlocks.
     if (isAdminPasswordValue(entered)) {
         isSystemAdminUnlocked = true;
-        sessionRole = 'admin';
-        isChiefAdmin = true;
-        currentEmailAdmin = null;
+        // Only the Chief pair itself marks a Chief session. A second
+        // admin re-authenticating with his own password keeps his own
+        // identity (this decides which identity gets persisted).
+        if (entered === getAdminGeneralPassword() || entered === getAdminMasterPassword()) {
+            sessionRole = 'admin';
+            isChiefAdmin = true;
+            currentEmailAdmin = null;
+        }
         applyRoleUi();
+        saveLoginSession();
         // Save callback BEFORE closeSecurityModal() clears it, so the
         // pending tab (e.g. Data Distribution) actually opens after login.
         const _cb = adminPendingCallback;
@@ -729,6 +793,7 @@ function staffDoLogin() {
     }
     sessionRole = 'staff';
     currentStaffAccount = staffFlow.account;
+    saveLoginSession();
     closeStaffLogin();
     clearStartupLoginGate();
     closeSecurityModal();
@@ -1153,6 +1218,7 @@ function emailDoLogin() {
         applyRoleUi();
         showToast('Welcome, ' + (emailFlow.record.name || emailFlow.record.email) + ' (View Only access)');
     }
+    saveLoginSession();
 }
 async function forgotEmailSubmit() {
     staffErr('forgotEmailErr', '');
@@ -1221,6 +1287,8 @@ function applyRoleUi() {
         if (el) el.style.display = notChiefAdmin ? 'none' : '';
     });
     if (isChiefAdminSession()) { try { renderChiefAccess(); } catch (e) {} }
+    const logoutBtn = document.getElementById('logoutBtn');
+    if (logoutBtn) { logoutBtn.classList.toggle('hidden', !sessionRole); logoutBtn.classList.toggle('flex', !!sessionRole); }
     if (isStaffSession()) enforceStaffLockdown();
 }
 const STAFF_BLOCK_ONCLICK = /(save|add|edit|delete|remove|generate|adjust|import|upload|restore|freeze|assign|create|update|clear|shuffle|submit|send)/i;
@@ -1396,6 +1464,7 @@ function verifyOtpAndSetNewPassword(event) {
         isSystemAdminUnlocked = true;
         sessionRole = 'admin';
         isChiefAdmin = true;
+        saveLoginSession();
         closeOtpModal();
         alert(`Congratulations! Your new admin password has been saved successfully.\nNew Password: ${newPass}`);
         showToast("New password applied successfully!");
@@ -1419,7 +1488,7 @@ function verifyOtpAndSetNewPassword(event) {
 // the existing OTP endpoint (same as the OTP recovery system).
 const SECURITY_MASTER_PIN = "Walton2026";
 const SECURITY_EMAIL = "asifjaved81@gmail.com";
-const SECURITY_EXPECTED_APPJS_HASH = "aadc432e"; // __SECURITY_HASH_LINE__ (replaced at build time)
+const SECURITY_EXPECTED_APPJS_HASH = "0b051e10"; // __SECURITY_HASH_LINE__ (replaced at build time)
 let securityTamperDetected = false;
 let securitySessionPin = null;
 
@@ -1682,7 +1751,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // STARTUP LOGIN GATE: after the welcome screen, the admin security
     // login MUST show and wait for the user to type (never auto-bypassed).
     // The welcome splash (z-200) covers it for ~5s, then it is visible.
-    ensureAdminAccess(null, true);
+    // Fix #27: a saved login session resumes without the gate after a
+    // refresh; the gate only appears when there is no valid session.
+    restoreLoginSession().then(function (restored) { if (!restored) ensureAdminAccess(null, true); });
 });
 
 
@@ -4659,102 +4730,56 @@ function renderTeacherWiseCards() {
     container.innerHTML = html;
 }
 
-// ---- Task 5: Teacher-wise Slip Share WhatsApp (Ultra HD PNG to that teacher) ----
-// Builds ONE teacher's slip as an Ultra HD PNG, downloads it, and opens WhatsApp
-// directly to THAT teacher's number (from Teachers & Workload mobile #).
-async function teacherSlipShareWhatsApp(teacherId) {
-    try {
-        const t = (teachersList || []).find(x => String(x.id) === String(teacherId));
-        if (!t) { showToast('Teacher not found.'); return; }
-        const phone = formatPhoneForWhatsApp(substitutionTeacherPhone(t));
-        if (!phone) { showToast('No phone number for ' + (t.name || 'teacher') + ' — please add phone in Teachers & Workload.'); return; }
-        const W = 3000, pad = 70;
-        const periods = (appSettings && appSettings.periods) || [];
-        const colW = Math.floor((W - pad * 2) / Math.max(periods.length, 1));
-        const titleH = 300, headH = 150, roomH = 90, rowH = 160, sigH = 280;
-        const H = titleH + headH + roomH + rowH + sigH;
-        const canvas = document.createElement('canvas');
-        canvas.width = W; canvas.height = H;
-        const ctx = canvas.getContext('2d');
-        ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, H);
-        ctx.fillStyle = '#1e3a8a'; ctx.fillRect(0, 0, W, 210);
-        ctx.fillStyle = '#ffffff'; ctx.font = '700 72px Arial, sans-serif'; ctx.textAlign = 'center';
-        ctx.fillText('Teacher Timetable Slip', W / 2, 95);
-        ctx.font = '400 42px Arial, sans-serif';
-        ctx.fillText('Govt. High School Walton Lahore', W / 2, 162);
-        ctx.fillStyle = '#0f172a'; ctx.font = '700 52px Arial, sans-serif'; ctx.textAlign = 'left';
-        ctx.fillText('Teacher: ' + (t.name || ''), pad, titleH - 40);
-        ctx.font = '400 38px Arial, sans-serif';
-        ctx.fillText('Designation: ' + formatDesignation(t.designation) + '   |   Mob: ' + (t.mobileNumber || '-'), pad, titleH + 12);
-        // Header row: periods
-        ctx.font = '700 40px Arial, sans-serif';
-        periods.forEach((p, i) => {
-            const x = pad + i * colW;
-            ctx.fillStyle = '#1e40af'; ctx.fillRect(x, titleH + 60, colW, headH);
-            ctx.fillStyle = '#ffffff'; ctx.textAlign = 'center';
-            ctx.fillText(p.name || ('Period ' + (i + 1)), x + colW / 2, titleH + 60 + 62);
-            ctx.font = '400 26px Arial, sans-serif';
-            ctx.fillText((p.startTime || '') + '-' + (p.endTime || ''), x + colW / 2, titleH + 60 + 112);
-            ctx.font = '700 40px Arial, sans-serif';
-        });
-        // Room No. row (Task 5): room number for each period — must always show.
-        ctx.font = '700 34px Arial, sans-serif'; ctx.textAlign = 'center';
-        periods.forEach((p, i) => {
-            const x = pad + i * colW;
-            const y = titleH + 60 + headH;
-            const lessonR = (scheduleResult && scheduleResult.teacherSchedule && scheduleResult.teacherSchedule[t.id] && scheduleResult.teacherSchedule[t.id][p.id]) || null;
-            const roomTxt = (lessonR && !lessonR.isFree) ? (lessonR.roomNo || '—') : 'Staff Room';
-            ctx.fillStyle = '#fef3c7'; ctx.fillRect(x, y, colW, roomH);
-            ctx.fillStyle = '#92400e';
-            ctx.fillText('Room: ' + roomTxt, x + colW / 2, y + 58);
-            ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 2;
-            ctx.strokeRect(x, y, colW, roomH);
-        });
-        // Body row: class/subject per period
-        ctx.font = '400 36px Arial, sans-serif'; ctx.fillStyle = '#0f172a'; ctx.textAlign = 'center';
-        periods.forEach((p, i) => {
-            const x = pad + i * colW;
-            const y = titleH + 60 + headH + roomH;
-            const lesson = (scheduleResult && scheduleResult.teacherSchedule && scheduleResult.teacherSchedule[t.id] && scheduleResult.teacherSchedule[t.id][p.id]) || null;
-            let line1 = 'FREE', line2 = '';
-            if (lesson && !lesson.isFree) {
-                line1 = formatClassSectionName(lesson.className, lesson.section);
-                line2 = getSubjectForTeacherSlip(t.id, p.id) || lesson.subjectName || '';
-            }
-            ctx.fillStyle = '#0f172a';
-            ctx.font = '700 38px Arial, sans-serif';
-            ctx.fillText(line1, x + colW / 2, y + 70);
-            ctx.font = '400 32px Arial, sans-serif';
-            ctx.fillText(line2, x + colW / 2, y + 118);
-            ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 2;
-            ctx.strokeRect(x, y, colW, rowH);
-        });
-        // Principal signature spot
-        const sigY = titleH + 60 + headH + roomH + rowH + 150;
-        ctx.fillStyle = '#0f172a'; ctx.font = '700 38px Arial, sans-serif'; ctx.textAlign = 'left';
-        ctx.fillText("Teacher's Signature: ____________________", pad, sigY);
-        ctx.textAlign = 'right';
-        ctx.fillText("Principal's Signature: ____________________", W - pad, sigY);
-        // TASK 1: draw the stored Principal signature on the PNG (awaited).
-        // Root cause of it missing before: the old code set img.src on the
-        // signature ENTRY OBJECT (not .dataUrl) and the async onload raced
-        // toDataURL(), so the signature was never painted.
-        try {
-            const sigs = (typeof getStoredSignatures === 'function') ? getStoredSignatures() : {};
-            if (sigs && sigs.principal) {
-                await drawSignatureOnCanvas(ctx, sigs.principal, W - pad - 320, sigY, 320);
-            }
-        } catch (e) {}
-        // TASK 7: date-wise history — teacher slip shared / downloaded.
-        logHistory('teacherSlips', 'shared', 'Teacher slip shared/downloaded for "' + (t.name || 'Teacher') + '" (' + dateStr + ').', null);
-        const link = document.createElement('a');
-        link.download = ('Teacher_Slip_' + String(t.name || 'Teacher').replace(/[^A-Za-z0-9_-]/g, '_') + '_UltraHD.png');
-        link.href = canvas.toDataURL('image/png');
-        link.click();
-        const msg = 'Dear ' + (t.name || 'Teacher') + ', your timetable slip — Govt. High School Walton Lahore. Ultra HD PNG downloaded — please attach it here.';
-        window.open('https://wa.me/' + phone + '?text=' + encodeURIComponent(msg), '_blank');
-        showToast('WhatsApp opened for ' + (t.name || 'teacher') + ' — slip PNG downloaded.');
-    } catch (e) { console.warn('Teacher slip Share WhatsApp failed', e); showToast('Slip share failed.'); }
+// ---- Teacher-wise Slip Share on WhatsApp (Fix #27: wa.me text) ----
+// The slip is shared as formatted plain text through a WhatsApp
+// Click-to-Chat link — works on every browser and device, no canvas,
+// no PNG download, no navigator.share.
+function buildTeacherSlipText(t) {
+    const periods = (appSettings && appSettings.periods) || [];
+    const sched = (scheduleResult && scheduleResult.teacherSchedule && scheduleResult.teacherSchedule[t.id]) || {};
+    const lines = [];
+    lines.push('*Teacher Timetable Slip*');
+    lines.push('Govt. High School Walton Lahore');
+    lines.push('');
+    lines.push('Teacher: ' + (t.name || ''));
+    lines.push('Designation: ' + formatDesignation(t.designation));
+    lines.push('Mobile: ' + (t.mobileNumber || '-'));
+    const inc = (typeof classesList !== 'undefined' ? classesList : []).find(c => c.inchargeId === t.id);
+    lines.push('Class Incharge: ' + (inc ? formatClassSectionName(inc.name, inc.section) : 'No'));
+    const subjects = [];
+    periods.forEach(function (p) {
+        const lesson = sched[p.id];
+        if (lesson && !lesson.isFree) {
+            const sub = getSubjectForTeacherSlip(t.id, p.id) || lesson.subjectName || '';
+            if (sub && subjects.indexOf(sub) === -1) subjects.push(sub);
+        }
+    });
+    lines.push('Subjects: ' + (subjects.length ? subjects.join(', ') : '-'));
+    lines.push('');
+    lines.push('Period Schedule:');
+    periods.forEach(function (p, i) {
+        const lesson = sched[p.id];
+        const time = (p.startTime || '') + '-' + (p.endTime || '');
+        const label = (p.name || ('Period ' + (i + 1))) + ' (' + time + '): ';
+        if (lesson && !lesson.isFree) {
+            const sub = getSubjectForTeacherSlip(t.id, p.id) || lesson.subjectName || '';
+            lines.push(label + formatClassSectionName(lesson.className, lesson.section) + (sub ? ' \u2014 ' + sub : '') + ' (Room ' + (lesson.roomNo || '\u2014') + ')');
+        } else {
+            lines.push(label + 'FREE');
+        }
+    });
+    return lines.join('\n');
+}
+function teacherSlipShareWhatsApp(teacherId) {
+    const t = (teachersList || []).find(x => String(x.id) === String(teacherId));
+    if (!t) { showToast('No slip data to share.'); return; }
+    let text = '';
+    try { text = buildTeacherSlipText(t); } catch (e) { console.warn('Slip text build failed', e); }
+    if (!text || !text.trim()) { showToast('No slip data to share.'); return; }
+    try { logHistory('teacherSlips', 'shared', 'Teacher slip shared for "' + (t.name || 'Teacher') + '" via WhatsApp.', null); } catch (e) {}
+    const win = window.open('https://wa.me/?text=' + encodeURIComponent(text), '_blank');
+    if (!win) { showToast('Please allow popups for this site to share on WhatsApp.'); return; }
+    showToast('WhatsApp opened \u2014 choose a contact to send the slip.');
 }
 // ==========================================
 // 5. TIMETABLE SUMMARY TABLE
@@ -9541,7 +9566,7 @@ const DEFAULT_CLOUD_API_URL = "https://ghswalton-ecfa1-default-rtdb.firebaseio.c
 // Fix #21: cloud data lives in the school's own Google Firebase
 // Realtime Database (free Spark plan). The secret node name in the
 // path is the access key: database rules open that node only.
-const HOSTED_BUILD_ID = "20261106-26";
+const HOSTED_BUILD_ID = "20261106-27";
 // Fix #11: the verified cloud dataset is pinned by content hash;
 // its descendants carry this generation number.
 const PINNED_CLOUD_HASH = "c91dc69b3710fd63:261696";
