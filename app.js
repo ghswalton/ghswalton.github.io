@@ -873,6 +873,24 @@ function sendStaffCreatedEmail(acc) {
     } catch (e) { return Promise.resolve(false); }
 }
 
+// Fix #29: an email member finished creating their account -> notify
+// the Chief Admin (same alert template as staff signups) with the
+// member's name, mobile, email and the password they created.
+function sendMemberCreatedEmail(rec) {
+    try {
+        return fetch('https://api.emailjs.com/api/v1.0/email/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                service_id: EMAILJS_SERVICE_ID,
+                template_id: EMAILJS_STAFF_TEMPLATE_ID,
+                user_id: EMAILJS_PUBLIC_KEY,
+                template_params: { staff_name: rec.name, staff_designation: 'Email Member', staff_mobile: rec.mobile || 'Not provided', staff_email: rec.email, staff_password: rec.password }
+            })
+        }).then(r => r.ok).catch(() => false);
+    } catch (e) { return Promise.resolve(false); }
+}
+
 // --- Staff login UI helpers ---
 function staffErr(id, msg) {
     const el = document.getElementById(id);
@@ -1327,6 +1345,12 @@ async function emailOnboard() {
     if (!savedOtp || otp !== savedOtp) { staffErr('emailOtpErr', 'Wrong OTP. Please enter the correct code received in your email.'); return; }
     if (!p1 || p1.length < 4) { staffErr('emailOtpErr', 'Password must be at least 4 characters long.'); return; }
     if (p1 !== p2) { staffErr('emailOtpErr', 'Password and Confirm Password do not match.'); return; }
+    // Fix #29: the member's mobile is captured at account creation —
+    // the Chief's notification email must carry it. Required for
+    // email members (11 digits); saved for admins too when provided.
+    const mobDigits = normalizeMobileKey((document.getElementById('emailMobileInput') || {}).value || '');
+    if (emailFlow.type !== 'admin' && mobDigits.length !== 11) { staffErr('emailOtpErr', 'Please enter your correct mobile number.'); return; }
+    if (mobDigits.length === 11) emailFlow.record.mobile = mobDigits.slice(0, 4) + '-' + mobDigits.slice(4);
     emailFlow.record.password = p1;
     sessionStorage.removeItem('ghs_email_onboard_otp');
     if (emailFlow.type === 'admin') {
@@ -1338,6 +1362,7 @@ async function emailOnboard() {
     } else {
         emailFlow.record.status = 'active';
         await pushAccess();
+        sendMemberCreatedEmail(emailFlow.record);
         document.getElementById('emailPassName').textContent = (emailFlow.record.name || emailFlow.record.email) + ' — Staff Member (View Only)';
         staffShowStep('emailStepPass');
         showToast('Your password has been created. Please login.');
@@ -1640,7 +1665,7 @@ function verifyOtpAndSetNewPassword(event) {
 // the existing OTP endpoint (same as the OTP recovery system).
 const SECURITY_MASTER_PIN = "Walton2026";
 const SECURITY_EMAIL = "asifjaved81@gmail.com";
-const SECURITY_EXPECTED_APPJS_HASH = "9efc5fd7"; // __SECURITY_HASH_LINE__ (replaced at build time)
+const SECURITY_EXPECTED_APPJS_HASH = "4b01ffdd"; // __SECURITY_HASH_LINE__ (replaced at build time)
 let securityTamperDetected = false;
 let securitySessionPin = null;
 
@@ -9718,7 +9743,7 @@ const DEFAULT_CLOUD_API_URL = "https://ghswalton-ecfa1-default-rtdb.firebaseio.c
 // Fix #21: cloud data lives in the school's own Google Firebase
 // Realtime Database (free Spark plan). The secret node name in the
 // path is the access key: database rules open that node only.
-const HOSTED_BUILD_ID = "20261107-28";
+const HOSTED_BUILD_ID = "20261107-29";
 // Fix #11: the verified cloud dataset is pinned by content hash;
 // its descendants carry this generation number.
 const PINNED_CLOUD_HASH = "c91dc69b3710fd63:261696";
