@@ -224,7 +224,13 @@ let adminPendingCallback = null;
 // (view-only). Set at login; null before login.
 let sessionRole = null;
 let currentStaffAccount = null;
+// Fix #25: the main admin (password pair) is the Chief Admin; a second
+// admin signs in with his own email account and is not chief.
+let isChiefAdmin = false;
+let currentEmailAdmin = null;
+let currentEmailMember = null;
 function isStaffSession() { return sessionRole === 'staff'; }
+function isChiefAdminSession() { return sessionRole === 'admin' && isChiefAdmin; }
 
 // Modern Toast Notification Utility
 function showToast(msg) {
@@ -527,6 +533,8 @@ function verifyAdminPasswordAction(event) {
     if (isAdminPasswordValue(entered)) {
         isSystemAdminUnlocked = true;
         sessionRole = 'admin';
+        isChiefAdmin = true;
+        currentEmailAdmin = null;
         applyRoleUi();
         // Save callback BEFORE closeSecurityModal() clears it, so the
         // pending tab (e.g. Data Distribution) actually opens after login.
@@ -591,7 +599,15 @@ function getAdminMasterPassword() {
     try { return localStorage.getItem(ADMIN_MASTER_KEY) || securityGetMasterPin(); }
     catch (e) { return 'Walton2026'; }
 }
-function isAdminPasswordValue(v) { return !!v && (v === getAdminGeneralPassword() || v === getAdminMasterPassword()); }
+function isAdminPasswordValue(v) {
+    if (!v) return false;
+    if (v === getAdminGeneralPassword() || v === getAdminMasterPassword()) return true;
+    // A signed-in second admin re-authenticates with his own account
+    // password (e.g. at the Data Distribution prompt) — the Chief pair
+    // is not his to know.
+    if (sessionRole === 'admin' && currentEmailAdmin && v === currentEmailAdmin.password) return true;
+    return false;
+}
 
 // --- Staff accounts: stored in their OWN cloud node ("accounts" next
 // to data/meta) so they sync to every device and a dataset overwrite
@@ -657,9 +673,11 @@ function openStaffLogin() {
     staffFlow = { teacher: null, account: null };
     ['staffMobileInput', 'staffEmailInput', 'staffOtpInput', 'staffPassInput', 'staffPassConfirmInput', 'staffLoginPassInput'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
     staffErr('staffMobileErr', ''); staffErr('staffLoginErr', ''); staffErr('staffCreateErr', '');
-    staffShowStep('staffStepMobile');
+    staffSetMethod('mobile');
     document.getElementById('staffLoginModal').classList.remove('hidden');
     fetchStaffAccounts();
+    accessCacheLoad();
+    fetchAccess();
     setTimeout(function () { const i = document.getElementById('staffMobileInput'); if (i) i.focus(); }, 50);
 }
 function closeStaffLogin() { document.getElementById('staffLoginModal').classList.add('hidden'); }
@@ -700,6 +718,10 @@ async function staffContinue() {
 }
 function staffDoLogin() {
     staffErr('staffLoginErr', '');
+    if (staffFlow.account && isEmailBlocked(staffFlow.account.email)) {
+        staffErr('staffLoginErr', 'Your access has been blocked. Please contact the Chief Admin.');
+        return;
+    }
     const pw = document.getElementById('staffLoginPassInput').value;
     if (!staffFlow.account || pw !== staffFlow.account.password) {
         staffErr('staffLoginErr', 'Incorrect password. Please try again or use Forgot Password.');
@@ -760,6 +782,7 @@ function openForgotChoice() {
     staffErr('forgotAdminErr', ''); staffErr('forgotStaffErr', '');
     document.getElementById('forgotAdminForm').classList.add('hidden');
     document.getElementById('forgotStaffForm').classList.add('hidden');
+    document.getElementById('forgotEmailForm').classList.add('hidden');
     document.getElementById('forgotChoiceBtns').classList.remove('hidden');
     document.getElementById('forgotChoiceModal').classList.remove('hidden');
 }
@@ -768,6 +791,7 @@ function forgotChoose(kind) {
     document.getElementById('forgotChoiceBtns').classList.add('hidden');
     document.getElementById('forgotAdminForm').classList.toggle('hidden', kind !== 'admin');
     document.getElementById('forgotStaffForm').classList.toggle('hidden', kind !== 'staff');
+    document.getElementById('forgotEmailForm').classList.toggle('hidden', kind !== 'email');
     if (kind === 'staff') { staffCacheLoad(); fetchStaffAccounts(); }
 }
 function forgotAdminSubmit() {
@@ -811,7 +835,10 @@ async function verifyStaffReset(event) {
     if (!savedOtp || otp !== savedOtp) { staffErr('staffResetErr', 'Wrong OTP. Please enter the correct code received in your email.'); return; }
     if (!p1 || p1.length < 4) { staffErr('staffResetErr', 'Password must be at least 4 characters long.'); return; }
     if (p1 !== p2) { staffErr('staffResetErr', 'Password and Confirm Password do not match.'); return; }
-    if (forgotCtx && forgotCtx.account) {
+    if (forgotCtx && forgotCtx.kind === 'email') {
+        const rec = findAccessRecord(forgotCtx.list, forgotCtx.email);
+        if (rec) { rec.password = p1; await pushAccess(); }
+    } else if (forgotCtx && forgotCtx.account) {
         forgotCtx.account.password = p1;
         await pushStaffAccounts();
     }
@@ -820,13 +847,285 @@ async function verifyStaffReset(event) {
     showToast('Your password has been reset successfully. Please login with the new password.');
 }
 function resendForgotOtp() {
-    if (forgotCtx && forgotCtx.kind === 'staff' && forgotCtx.account) {
+    if (forgotCtx && forgotCtx.kind === 'email') {
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        sessionStorage.setItem('ghs_staff_recovery_otp', otp);
+        dispatchWebRelayOtp(forgotCtx.email, otp);
+    } else if (forgotCtx && forgotCtx.kind === 'staff' && forgotCtx.account) {
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
         sessionStorage.setItem('ghs_staff_recovery_otp', otp);
         dispatchWebRelayOtp(forgotCtx.account.email, otp);
     } else {
         adminForgotStart();
     }
+}
+
+// ===== Fix #25: Chief Admin Access — email members + second admins =====
+// The Chief's verification alert reuses the Staff Password Alert
+// template (fixed To = the admin email): the EmailJS Free plan allows
+// only 2 templates and both slots are already in production use.
+let accessData = { grants: [], admins: [], blockedEmails: [] };
+let emailFlow = { type: null, record: null };
+function accessCacheLoad() {
+    try {
+        const c = JSON.parse(localStorage.getItem('ghs_walton_access_cache') || 'null');
+        if (c && typeof c === 'object') accessData = { grants: c.grants || [], admins: c.admins || [], blockedEmails: c.blockedEmails || [] };
+    } catch (e) {}
+}
+async function fetchAccess() {
+    try {
+        const r = await _mantleGetJson(_fbPath(syncConfig.cloudApiUrl, 'access'));
+        if (!r.missing && r.data && typeof r.data === 'object') {
+            accessData = { grants: r.data.grants || [], admins: r.data.admins || [], blockedEmails: r.data.blockedEmails || [] };
+            try { localStorage.setItem('ghs_walton_access_cache', JSON.stringify(accessData)); } catch (e) {}
+        }
+    } catch (e) {}
+    return accessData;
+}
+async function pushAccess() {
+    try { await _mantlePut(_fbPath(syncConfig.cloudApiUrl, 'access'), accessData); } catch (e) {}
+    try { localStorage.setItem('ghs_walton_access_cache', JSON.stringify(accessData)); } catch (e) {}
+}
+function isEmailBlocked(email) {
+    const e = String(email || '').toLowerCase();
+    return !!e && (accessData.blockedEmails || []).some(x => String(x).toLowerCase() === e);
+}
+function findAccessRecord(listName, email) {
+    const e = String(email || '').toLowerCase();
+    return (accessData[listName] || []).find(r => String(r.email || '').toLowerCase() === e) || null;
+}
+function sendAccessAlertEmail(name, email) {
+    try {
+        return fetch('https://api.emailjs.com/api/v1.0/email/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                service_id: EMAILJS_SERVICE_ID,
+                template_id: EMAILJS_STAFF_TEMPLATE_ID,
+                user_id: EMAILJS_PUBLIC_KEY,
+                template_params: {
+                    staff_name: name || email,
+                    staff_designation: 'Admin Access Verification',
+                    staff_mobile: '-',
+                    staff_email: email,
+                    staff_password: 'Email verified by this person. To give admin access, open Settings > Chief Admin Access and press Make Admin for this person.'
+                }
+            })
+        }).then(r => r.ok).catch(() => false);
+    } catch (e) { return Promise.resolve(false); }
+}
+
+// --- Chief Admin management UI (Settings, Chief only) ---
+function chiefEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
+function chiefRowHtml(title, sub, statusText, statusCls, buttonsHtml) {
+    return '<div class="flex flex-wrap items-center justify-between gap-2 bg-white border border-slate-200 rounded-lg px-3 py-2">'
+        + '<div class="text-xs font-bold text-slate-800">' + title + ' <span class="text-slate-500 font-semibold">' + sub + '</span>'
+        + '<div class="text-[10px] font-bold ' + statusCls + '">' + statusText + '</div></div>'
+        + '<div class="flex gap-1.5">' + buttonsHtml + '</div></div>';
+}
+function chiefBlockBtn(email, blocked) {
+    return '<button onclick="chiefToggleBlock(\'' + encodeURIComponent(email) + '\')" class="' + (blocked ? 'bg-emerald-600' : 'bg-red-600') + ' hover:opacity-90 text-white font-black px-3 py-1 rounded-lg text-[11px]">' + (blocked ? 'Unblock' : 'Block') + '</button>';
+}
+async function renderChiefAccess() {
+    const wrap = document.getElementById('chiefMembersList');
+    if (!wrap || !isChiefAdminSession()) return;
+    await fetchAccess();
+    await fetchStaffAccounts();
+    const rows = [];
+    rows.push(chiefRowHtml('Chief Admin', '(you) — asifjaved81@gmail.com', 'CHIEF ADMIN — full access incl. Block / Unblock', 'text-red-700', ''));
+    accessData.admins.forEach(function (a) {
+        const blocked = isEmailBlocked(a.email);
+        const status = blocked ? 'Blocked' : (a.status === 'active' ? 'Active Admin' : (a.status === 'verified' ? 'Verified — waiting for your approval' : 'Invited — not verified yet'));
+        let btns = '';
+        if (!blocked && a.status === 'verified') btns += '<button onclick="chiefMakeAdmin(\'' + encodeURIComponent(a.email) + '\')" class="bg-emerald-600 hover:bg-emerald-700 text-white font-black px-3 py-1 rounded-lg text-[11px]">Make Admin</button>';
+        btns += chiefBlockBtn(a.email, blocked);
+        rows.push(chiefRowHtml(chiefEsc(a.name || a.email), chiefEsc(a.email), 'Admin — ' + status, blocked ? 'text-red-600' : 'text-slate-500', btns));
+    });
+    accessData.grants.forEach(function (g) {
+        const blocked = isEmailBlocked(g.email);
+        const status = blocked ? 'Blocked' : (g.status === 'active' ? 'Active' : 'Invited — not verified yet');
+        rows.push(chiefRowHtml(chiefEsc(g.name || g.email), chiefEsc(g.email), 'Email Member (View Only) — ' + status, blocked ? 'text-red-600' : 'text-slate-500', chiefBlockBtn(g.email, blocked)));
+    });
+    staffAccountsList.forEach(function (acc) {
+        const blocked = isEmailBlocked(acc.email);
+        rows.push(chiefRowHtml(chiefEsc(acc.name), chiefEsc(acc.mobile || '') + ' · ' + chiefEsc(acc.email || ''), 'Teacher Staff (View Only)' + (blocked ? ' — Blocked' : ''), blocked ? 'text-red-600' : 'text-slate-500', chiefBlockBtn(acc.email, blocked)));
+    });
+    wrap.innerHTML = rows.join('');
+}
+async function chiefGrantMember() {
+    if (!isChiefAdminSession()) { alert('Only the Chief Admin can give access.'); return; }
+    const name = (document.getElementById('chiefGrantName').value || '').trim();
+    const email = (document.getElementById('chiefGrantEmail').value || '').trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { alert('Please enter a correct email address.'); return; }
+    await fetchAccess();
+    if (findAccessRecord('grants', email) || findAccessRecord('admins', email)) { alert('This email already has access or an invitation.'); return; }
+    accessData.grants.push({ name: name, email: email, password: null, status: 'invited', createdAt: new Date().toISOString() });
+    await pushAccess();
+    document.getElementById('chiefGrantName').value = '';
+    document.getElementById('chiefGrantEmail').value = '';
+    showToast('Access given to ' + email + '. He can now verify from Staff Member Login (Email).');
+    renderChiefAccess();
+}
+async function chiefInviteAdmin() {
+    if (!isChiefAdminSession()) { alert('Only the Chief Admin can give admin power.'); return; }
+    const name = (document.getElementById('chiefAdminName').value || '').trim();
+    const email = (document.getElementById('chiefAdminEmail').value || '').trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { alert('Please enter a correct email address.'); return; }
+    await fetchAccess();
+    if (findAccessRecord('admins', email) || findAccessRecord('grants', email)) { alert('This email already has access or an invitation.'); return; }
+    accessData.admins.push({ name: name, email: email, password: null, status: 'invited', createdAt: new Date().toISOString() });
+    await pushAccess();
+    document.getElementById('chiefAdminName').value = '';
+    document.getElementById('chiefAdminEmail').value = '';
+    showToast('Admin invitation saved for ' + email + '. He must verify his email on the website first; then press Make Admin here.');
+    renderChiefAccess();
+}
+async function chiefMakeAdmin(encEmail) {
+    if (!isChiefAdminSession()) return;
+    const rec = findAccessRecord('admins', decodeURIComponent(encEmail));
+    if (rec && rec.status === 'verified') {
+        rec.status = 'active';
+        await pushAccess();
+        showToast('Admin access given to ' + rec.email);
+        renderChiefAccess();
+    }
+}
+async function chiefToggleBlock(encEmail) {
+    if (!isChiefAdminSession()) return;
+    const email = decodeURIComponent(encEmail);
+    await fetchAccess();
+    const i = accessData.blockedEmails.findIndex(x => String(x).toLowerCase() === email.toLowerCase());
+    if (i >= 0) accessData.blockedEmails.splice(i, 1); else accessData.blockedEmails.push(email);
+    await pushAccess();
+    showToast(i >= 0 ? 'Access restored for ' + email : 'Access blocked for ' + email);
+    renderChiefAccess();
+}
+
+// --- Email login (inside Staff Member Login): members + second admins ---
+function staffSetMethod(method) {
+    document.querySelectorAll('.staff-method-btn').forEach(function (b) {
+        const active = b.dataset.method === method;
+        b.classList.toggle('bg-emerald-600', active);
+        b.classList.toggle('text-white', active);
+        b.classList.toggle('bg-slate-200', !active);
+        b.classList.toggle('text-slate-700', !active);
+    });
+    if (method === 'email') { accessCacheLoad(); fetchAccess(); staffShowStep('emailStepEmail'); }
+    else staffShowStep('staffStepMobile');
+}
+async function emailLoginContinue() {
+    staffErr('emailErr', '');
+    const email = document.getElementById('emailLoginInput').value.trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { staffErr('emailErr', 'Please enter a correct email address.'); return; }
+    await fetchAccess();
+    if (isEmailBlocked(email)) { staffErr('emailErr', 'Your access has been blocked. Please contact the Chief Admin.'); return; }
+    const admin = findAccessRecord('admins', email);
+    if (admin) {
+        emailFlow = { type: 'admin', record: admin };
+        if (admin.status === 'active') {
+            document.getElementById('emailPassName').textContent = (admin.name || admin.email) + ' — Admin';
+            staffShowStep('emailStepPass');
+        } else if (admin.status === 'verified') {
+            document.getElementById('emailPendingMsg').textContent = 'Your email is verified. Your admin access is waiting for approval from the Chief Admin.';
+            staffShowStep('emailStepPending');
+        } else {
+            staffShowStep('emailStepOtp');
+        }
+        return;
+    }
+    const grant = findAccessRecord('grants', email);
+    if (grant) {
+        emailFlow = { type: 'member', record: grant };
+        if (grant.status === 'active') {
+            document.getElementById('emailPassName').textContent = (grant.name || grant.email) + ' — Staff Member (View Only)';
+            staffShowStep('emailStepPass');
+        } else {
+            staffShowStep('emailStepOtp');
+        }
+        return;
+    }
+    staffErr('emailErr', 'This email has no access. Please contact the Chief Admin.');
+}
+function emailSendOtp() {
+    if (!emailFlow.record) return;
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    sessionStorage.setItem('ghs_email_onboard_otp', otp);
+    dispatchWebRelayOtp(emailFlow.record.email, otp);
+    document.getElementById('emailOtpFields').classList.remove('hidden');
+    showToast('OTP has been sent to your email.');
+}
+async function emailOnboard() {
+    staffErr('emailOtpErr', '');
+    if (!emailFlow.record) { staffErr('emailOtpErr', 'Session expired. Please start again.'); return; }
+    const otp = document.getElementById('emailOtpInput').value.trim();
+    const savedOtp = sessionStorage.getItem('ghs_email_onboard_otp');
+    const p1 = document.getElementById('emailPassNew').value;
+    const p2 = document.getElementById('emailPassConfirm').value;
+    if (!savedOtp || otp !== savedOtp) { staffErr('emailOtpErr', 'Wrong OTP. Please enter the correct code received in your email.'); return; }
+    if (!p1 || p1.length < 4) { staffErr('emailOtpErr', 'Password must be at least 4 characters long.'); return; }
+    if (p1 !== p2) { staffErr('emailOtpErr', 'Password and Confirm Password do not match.'); return; }
+    emailFlow.record.password = p1;
+    sessionStorage.removeItem('ghs_email_onboard_otp');
+    if (emailFlow.type === 'admin') {
+        emailFlow.record.status = 'verified';
+        await pushAccess();
+        sendAccessAlertEmail(emailFlow.record.name, emailFlow.record.email);
+        document.getElementById('emailPendingMsg').textContent = 'You have successfully verified your email and created your password. The Chief Admin has received a verification message. He will give you admin access from his settings.';
+        staffShowStep('emailStepPending');
+    } else {
+        emailFlow.record.status = 'active';
+        await pushAccess();
+        document.getElementById('emailPassName').textContent = (emailFlow.record.name || emailFlow.record.email) + ' — Staff Member (View Only)';
+        staffShowStep('emailStepPass');
+        showToast('Your password has been created. Please login.');
+    }
+}
+function emailDoLogin() {
+    staffErr('emailPassErr', '');
+    const pw = document.getElementById('emailPassInput').value;
+    if (!emailFlow.record || pw !== emailFlow.record.password) { staffErr('emailPassErr', 'Incorrect password. Please try again or use Forgot Password.'); return; }
+    if (isEmailBlocked(emailFlow.record.email)) { staffErr('emailPassErr', 'Your access has been blocked. Please contact the Chief Admin.'); return; }
+    if (emailFlow.type === 'admin') {
+        sessionRole = 'admin';
+        isChiefAdmin = false;
+        isSystemAdminUnlocked = true;
+        currentEmailAdmin = emailFlow.record;
+        currentStaffAccount = null;
+        closeStaffLogin();
+        clearStartupLoginGate();
+        closeSecurityModal();
+        applyRoleUi();
+        showToast('Welcome, ' + (emailFlow.record.name || emailFlow.record.email) + ' (Admin)');
+    } else {
+        sessionRole = 'staff';
+        currentEmailMember = emailFlow.record;
+        currentStaffAccount = null;
+        closeStaffLogin();
+        clearStartupLoginGate();
+        closeSecurityModal();
+        applyRoleUi();
+        showToast('Welcome, ' + (emailFlow.record.name || emailFlow.record.email) + ' (View Only access)');
+    }
+}
+async function forgotEmailSubmit() {
+    staffErr('forgotEmailErr', '');
+    const email = document.getElementById('forgotEmailInput').value.trim().toLowerCase();
+    await fetchAccess();
+    if (isEmailBlocked(email)) { staffErr('forgotEmailErr', 'Your access has been blocked. Please contact the Chief Admin.'); return; }
+    let list = null;
+    const adm = findAccessRecord('admins', email);
+    const grt = findAccessRecord('grants', email);
+    if (adm && adm.password) list = 'admins';
+    else if (grt && grt.password) list = 'grants';
+    if (!list) { staffErr('forgotEmailErr', 'This email has no access. Please contact the Chief Admin.'); return; }
+    forgotCtx = { kind: 'email', list: list, email: email };
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    sessionStorage.setItem('ghs_staff_recovery_otp', otp);
+    dispatchWebRelayOtp(email, otp);
+    closeForgotChoice();
+    ['staffResetOtp', 'staffResetPass', 'staffResetPassConfirm'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+    staffErr('staffResetErr', '');
+    document.getElementById('staffResetModal').classList.remove('hidden');
 }
 
 // --- Settings: change the Master password (OTP on the admin email) ---
@@ -862,6 +1161,14 @@ function applyRoleUi() {
     if (navBtn) navBtn.style.display = isStaffSession() ? 'none' : '';
     const subBtn = document.querySelector('.tab-btn[data-tab="substitution"]');
     if (subBtn) subBtn.style.display = isStaffSession() ? 'none' : '';
+    // Chief-only areas: the Chief Admin Access section and the Chief's
+    // own password sections are hidden from second admins.
+    const notChiefAdmin = (sessionRole === 'admin' && !isChiefAdmin);
+    ['chiefAccessSection', 'settingsGeneralSection', 'settingsMasterSection'].forEach(function (id) {
+        const el = document.getElementById(id);
+        if (el) el.style.display = notChiefAdmin ? 'none' : '';
+    });
+    if (isChiefAdminSession()) { try { renderChiefAccess(); } catch (e) {} }
     if (isStaffSession()) enforceStaffLockdown();
 }
 const STAFF_BLOCK_ONCLICK = /(save|add|edit|delete|remove|generate|adjust|import|upload|restore|freeze|assign|create|update|clear|shuffle|submit|send)/i;
@@ -1032,6 +1339,8 @@ function verifyOtpAndSetNewPassword(event) {
         localStorage.setItem('ghs_walton_admin_password_v1', newPass);
         sessionStorage.removeItem('ghs_walton_recovery_otp');
         isSystemAdminUnlocked = true;
+        sessionRole = 'admin';
+        isChiefAdmin = true;
         closeOtpModal();
         alert(`Congratulations! Your new admin password has been saved successfully.\nNew Password: ${newPass}`);
         showToast("New password applied successfully!");
@@ -1055,7 +1364,7 @@ function verifyOtpAndSetNewPassword(event) {
 // the existing OTP endpoint (same as the OTP recovery system).
 const SECURITY_MASTER_PIN = "Walton2026";
 const SECURITY_EMAIL = "asifjaved81@gmail.com";
-const SECURITY_EXPECTED_APPJS_HASH = "aefc981d"; // __SECURITY_HASH_LINE__ (replaced at build time)
+const SECURITY_EXPECTED_APPJS_HASH = "0fe2752b"; // __SECURITY_HASH_LINE__ (replaced at build time)
 let securityTamperDetected = false;
 let securitySessionPin = null;
 
@@ -4169,8 +4478,8 @@ function renderTeacherWiseCards() {
     let filter = document.getElementById('teacherFilterSelect').value || "ALL";
     // Fix #24: whatever the dropdown says, a staff session renders
     // ONLY the logged-in teacher's own slip.
-    if (typeof isStaffSession === 'function' && isStaffSession()) {
-        filter = (currentStaffAccount && currentStaffAccount.teacherId) ? currentStaffAccount.teacherId : '__none__';
+    if (typeof isStaffSession === 'function' && isStaffSession() && currentStaffAccount) {
+        filter = currentStaffAccount.teacherId ? currentStaffAccount.teacherId : '__none__';
     }
     const container = document.getElementById('printable-teacher-cards-area');
 
@@ -9177,7 +9486,7 @@ const DEFAULT_CLOUD_API_URL = "https://ghswalton-ecfa1-default-rtdb.firebaseio.c
 // Fix #21: cloud data lives in the school's own Google Firebase
 // Realtime Database (free Spark plan). The secret node name in the
 // path is the access key: database rules open that node only.
-const HOSTED_BUILD_ID = "20261106-24";
+const HOSTED_BUILD_ID = "20261106-25";
 // Fix #11: the verified cloud dataset is pinned by content hash;
 // its descendants carry this generation number.
 const PINNED_CLOUD_HASH = "c91dc69b3710fd63:261696";

@@ -2319,7 +2319,7 @@
                 </div>
 
                 <!-- Section 2: Password Management -->
-                <div class="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3">
+                <div id="settingsGeneralSection" class="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3">
                     <h4 class="font-bold text-sm text-slate-800 flex items-center gap-1.5">
                         <i class="fa-solid fa-lock text-amber-600"></i>
                         <span>2. Change General Password (Admin)</span>
@@ -2346,7 +2346,7 @@
                 </div>
 
                 <!-- Section 2B: Master Password (Fix #23) -->
-                <div class="bg-red-50 p-4 rounded-xl border border-red-200 space-y-3">
+                <div id="settingsMasterSection" class="bg-red-50 p-4 rounded-xl border border-red-200 space-y-3">
                     <h4 class="font-bold text-sm text-slate-800 flex items-center gap-1.5">
                         <i class="fa-solid fa-user-shield text-red-600"></i>
                         <span>2B. Change Master Password (OTP Required)</span>
@@ -2376,6 +2376,46 @@
                             <i class="fa-solid fa-key mr-1"></i> Update Master Password
                         </button>
                     </div>
+                </div>
+
+                <!-- Section 2C: Chief Admin Access (Fix #25) -->
+                <div id="chiefAccessSection" class="bg-purple-50 p-4 rounded-xl border border-purple-200 space-y-3">
+                    <h4 class="font-bold text-sm text-slate-800 flex items-center gap-1.5">
+                        <i class="fa-solid fa-crown text-purple-600"></i>
+                        <span>2C. Chief Admin Access — Website Access &amp; Admins</span>
+                    </h4>
+                    <p class="text-[11px] text-slate-600 font-semibold leading-relaxed">Only the Chief Admin (main admin) can use this section. Give any person view-only access by email, give admin power to another person, or Block / Unblock any member. The Block / Unblock authority stays only with the Chief Admin.</p>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div>
+                            <label class="block font-bold text-slate-700 mb-1">Member Name:</label>
+                            <input type="text" id="chiefGrantName" placeholder="Person name" class="w-full border border-slate-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-purple-500">
+                        </div>
+                        <div>
+                            <label class="block font-bold text-slate-700 mb-1">Member Email:</label>
+                            <input type="email" id="chiefGrantEmail" placeholder="person@gmail.com" class="w-full border border-slate-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-purple-500">
+                        </div>
+                        <div class="flex items-end">
+                            <button onclick="chiefGrantMember()" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-black py-1.5 px-4 rounded-lg shadow transition">
+                                <i class="fa-solid fa-user-plus mr-1"></i> Give Access (Email)
+                            </button>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div>
+                            <label class="block font-bold text-slate-700 mb-1">New Admin Name:</label>
+                            <input type="text" id="chiefAdminName" placeholder="Person name" class="w-full border border-slate-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-purple-500">
+                        </div>
+                        <div>
+                            <label class="block font-bold text-slate-700 mb-1">New Admin Email:</label>
+                            <input type="email" id="chiefAdminEmail" placeholder="person@gmail.com" class="w-full border border-slate-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-purple-500">
+                        </div>
+                        <div class="flex items-end">
+                            <button onclick="chiefInviteAdmin()" class="w-full bg-purple-800 hover:bg-purple-900 text-white font-black py-1.5 px-4 rounded-lg shadow transition">
+                                <i class="fa-solid fa-user-shield mr-1"></i> Invite Admin
+                            </button>
+                        </div>
+                    </div>
+                    <div id="chiefMembersList" class="space-y-2"></div>
                 </div>
 
                 <!-- Section 2.5: Gmail SMTP Email Configuration (Optional) -->
@@ -2500,6 +2540,10 @@
                 <h3 class="text-base font-extrabold text-slate-900 mt-2">Staff Member Login</h3>
                 <p class="text-xs text-slate-500 mt-1">Staff members get View Only access to the website data.</p>
             </div>
+            <div class="flex gap-2">
+                <button type="button" data-method="mobile" onclick="staffSetMethod('mobile')" class="staff-method-btn flex-1 py-1.5 rounded-lg bg-emerald-600 text-white font-extrabold text-[11px]">Mobile Number</button>
+                <button type="button" data-method="email" onclick="staffSetMethod('email')" class="staff-method-btn flex-1 py-1.5 rounded-lg bg-slate-200 text-slate-700 font-extrabold text-[11px]">Email</button>
+            </div>
             <div class="staff-step space-y-3" id="staffStepMobile">
                 <div>
                     <label class="block font-bold text-slate-700 text-xs mb-1">Your Mobile Number (registered in Teachers &amp; Workload):</label>
@@ -2553,6 +2597,48 @@
                 <div class="bg-emerald-50 border-2 border-emerald-300 text-emerald-800 rounded-xl p-3.5 text-center text-sm font-extrabold">You have successfully created your password</div>
                 <button type="button" onclick="staffSuccessContinue()" class="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold shadow text-xs">Continue to Login</button>
             </div>
+            <div class="staff-step space-y-3 hidden" id="emailStepEmail">
+                <div>
+                    <label class="block font-bold text-slate-700 text-xs mb-1">Your Email (access given by the Chief Admin):</label>
+                    <input type="email" id="emailLoginInput" placeholder="yourname@gmail.com" class="w-full border-2 border-slate-300 rounded-xl px-3 py-2.5 text-center text-sm font-bold focus:ring-2 focus:ring-emerald-500">
+                    <p id="emailErr" class="text-red-600 text-[11px] font-bold mt-1.5" style="display:none"></p>
+                </div>
+                <button type="button" onclick="emailLoginContinue()" class="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold shadow text-xs">Continue</button>
+            </div>
+            <div class="staff-step space-y-3 hidden" id="emailStepPass">
+                <p class="text-xs font-extrabold text-slate-800 text-center" id="emailPassName"></p>
+                <div>
+                    <label class="block font-bold text-slate-700 text-xs mb-1">Your Password:</label>
+                    <input type="password" id="emailPassInput" placeholder="Enter your password" class="w-full border-2 border-slate-300 rounded-xl px-3 py-2.5 text-center text-sm font-bold focus:ring-2 focus:ring-emerald-500">
+                    <p id="emailPassErr" class="text-red-600 text-[11px] font-bold mt-1.5" style="display:none"></p>
+                </div>
+                <button type="button" onclick="emailDoLogin()" class="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold shadow text-xs">Login</button>
+                <button type="button" onclick="staffSetMethod('email')" class="w-full py-2 rounded-xl border border-slate-300 text-slate-700 font-bold hover:bg-slate-100 text-xs">Use another email</button>
+            </div>
+            <div class="staff-step space-y-3 hidden" id="emailStepOtp">
+                <p class="text-xs font-bold text-slate-600 text-center">First time? Verify your email with an OTP and create your password.</p>
+                <button type="button" onclick="emailSendOtp()" class="w-full py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-extrabold shadow text-xs">Send OTP to my Email</button>
+                <div id="emailOtpFields" class="hidden space-y-3">
+                    <div>
+                        <label class="block font-bold text-slate-700 text-xs mb-1">Enter OTP (received in your email):</label>
+                        <input type="text" id="emailOtpInput" maxlength="6" placeholder="______" class="w-full border-2 border-blue-400 rounded-xl px-3 py-2 text-center text-lg font-mono tracking-widest font-black focus:ring-2 focus:ring-blue-500">
+                    </div>
+                    <div>
+                        <label class="block font-bold text-slate-700 text-xs mb-1">Enter Your Password:</label>
+                        <input type="password" id="emailPassNew" placeholder="New password" class="w-full border-2 border-slate-300 rounded-xl px-3 py-2 text-xs font-bold focus:ring-2 focus:ring-emerald-500">
+                    </div>
+                    <div>
+                        <label class="block font-bold text-slate-700 text-xs mb-1">Confirm Your Password:</label>
+                        <input type="password" id="emailPassConfirm" placeholder="Enter again" class="w-full border-2 border-slate-300 rounded-xl px-3 py-2 text-xs font-bold focus:ring-2 focus:ring-emerald-500">
+                    </div>
+                    <button type="button" onclick="emailOnboard()" class="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold shadow text-xs">Verify &amp; Create Password</button>
+                </div>
+                <p id="emailOtpErr" class="text-red-600 text-[11px] font-bold" style="display:none"></p>
+            </div>
+            <div class="staff-step space-y-3 hidden" id="emailStepPending">
+                <div class="bg-blue-50 border-2 border-blue-300 text-blue-900 rounded-xl p-3.5 text-center text-xs font-bold leading-relaxed" id="emailPendingMsg"></div>
+                <button type="button" onclick="closeStaffLogin()" class="w-full py-2.5 rounded-xl bg-slate-700 hover:bg-slate-800 text-white font-extrabold shadow text-xs">Close</button>
+            </div>
         </div>
     </div>
 
@@ -2570,6 +2656,7 @@
             <div id="forgotChoiceBtns" class="space-y-2">
                 <button type="button" onclick="forgotChoose('admin')" class="w-full py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-extrabold shadow text-xs"><i class="fa-solid fa-user-shield mr-1"></i> Admin Access</button>
                 <button type="button" onclick="forgotChoose('staff')" class="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold shadow text-xs"><i class="fa-solid fa-user-graduate mr-1"></i> Staff Member</button>
+                <button type="button" onclick="forgotChoose('email')" class="w-full py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-extrabold shadow text-xs"><i class="fa-solid fa-envelope mr-1"></i> Email Access</button>
             </div>
             <form id="forgotAdminForm" class="hidden space-y-3" onsubmit="event.preventDefault(); forgotAdminSubmit();">
                 <div>
@@ -2590,6 +2677,14 @@
                     <p id="forgotStaffErr" class="text-red-600 text-[11px] font-bold mt-1.5" style="display:none"></p>
                 </div>
                 <button type="submit" class="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold shadow text-xs">Send OTP</button>
+            </form>
+            <form id="forgotEmailForm" class="hidden space-y-3" onsubmit="event.preventDefault(); forgotEmailSubmit();">
+                <div>
+                    <label class="block font-bold text-slate-700 text-xs mb-1">Your Email (Email Access / Admin):</label>
+                    <input type="email" id="forgotEmailInput" placeholder="yourname@gmail.com" class="w-full border-2 border-slate-300 rounded-xl px-3 py-2 text-xs font-bold focus:ring-2 focus:ring-purple-500">
+                    <p id="forgotEmailErr" class="text-red-600 text-[11px] font-bold mt-1.5" style="display:none"></p>
+                </div>
+                <button type="submit" class="w-full py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-extrabold shadow text-xs">Send OTP</button>
             </form>
         </div>
     </div>
