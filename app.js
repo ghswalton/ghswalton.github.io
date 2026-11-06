@@ -701,7 +701,7 @@ function verifyOtpAndSetNewPassword(event) {
 // the existing OTP endpoint (same as the OTP recovery system).
 const SECURITY_MASTER_PIN = "Walton2026";
 const SECURITY_EMAIL = "asifjaved81@gmail.com";
-const SECURITY_EXPECTED_APPJS_HASH = "40c0483d"; // __SECURITY_HASH_LINE__ (replaced at build time)
+const SECURITY_EXPECTED_APPJS_HASH = "398f26df"; // __SECURITY_HASH_LINE__ (replaced at build time)
 let securityTamperDetected = false;
 let securitySessionPin = null;
 
@@ -8723,16 +8723,16 @@ function resetAllSystemDataAction() {
 // 5. 1-Click Universal Permanent Save Button on Header
 
 const SYNC_STORAGE_KEY = "GHS_WALTON_TIMETABLE_SYNC_CONFIG_V1";
-const DEFAULT_CLOUD_API_URL = "https://mantledb.sh/v2/ghs-walton-timetable-23608967/walton_v2";
-// Hosted build: the browser talks to MantleDB directly (no local proxy server),
-// so every cloud request carries this access key in the X-Mantle-Key header.
-const HOSTED_BUILD_ID = "20261106-20";
+const DEFAULT_CLOUD_API_URL = "https://ghswalton-ecfa1-default-rtdb.firebaseio.com/walton_x9k4m2";
+// Fix #21: cloud data lives in the school's own Google Firebase
+// Realtime Database (free Spark plan). The secret node name in the
+// path is the access key: database rules open that node only.
+const HOSTED_BUILD_ID = "20261106-21";
 // Fix #11: the verified cloud dataset is pinned by content hash;
 // its descendants carry this generation number.
-const PINNED_CLOUD_HASH = "84ecd4798a03410f:257923";
+const PINNED_CLOUD_HASH = "c91dc69b3710fd63:261696";
 const PINNED_CLOUD_GEN = 7;
 let heldSyncGen = 0;
-const MANTLE_DB_KEY = "2cb4449376f8701773ec16efb5fd6ffca6c0dd128e791e4e1dcc73489af46821";
 
 let syncConfig = {
     internetCloudEnabled: true,
@@ -8783,69 +8783,57 @@ function saveSyncConfig() {
     }
 }
 
-// Hosted build: direct MantleDB access (replaces the local cloud-pull proxy).
-// Pull: GET the database URL with the key header; the response body IS the dataset.
-// HTTP 404 means the cloud database is still empty -> report success with no data,
-// exactly like the old proxy's empty-database result. The returned object mirrors
-// the proxy response shape ({ ok, json() -> { success, data } }) so every caller
-// keeps its original downstream logic unchanged.
-// Hosted storage fix #8: the cloud provider now caps one document at
-// 64 KB while the full dataset is ~285 KB, so the dataset is stored as
-// text chunks (sync_c0, sync_c1, ...) plus a tiny manifest at the
-// dataset URL. datasetContentHash is declared later in this file and
-// is hoisted, so it is safe to call here.
+// Hosted build: direct Firebase Realtime Database access (REST).
+// Fix #21 layout under the dataset's base path (the secret node):
+//   <base>/data.json  the whole dataset as ONE JSON string (the
+//                     dataset's own keys contain '.' and '#', which
+//                     Firebase forbids as node keys, so it is stored
+//                     as text, exactly like the old chunk text)
+//   <base>/meta.json  a tiny manifest (seq/epoch/hash/length), always
+//                     written LAST so a torn push never validates.
+// A missing node reads back as JSON null -> the cloud counts as
+// empty -> report success with no data. The returned object mirrors
+// the proxy response shape ({ ok, json() -> { success, data } }) so
+// every caller keeps its original downstream logic unchanged.
+// datasetContentHash is declared later in this file and is hoisted,
+// so it is safe to call here.
 let _pullCache = { url: "", seq: -1, hash: "", text: "" };
-const SYNC_CHUNK_CHARS = 40000;
-function _syncChunkUrl(apiUrl, idx) {
-    // Fix #14: chunk documents carry the dataset's own path name
-    // (walton_main -> walton_main_c0...). Two dataset paths in one
-    // database must never share a chunk series: an abandoned
-    // path's stale chunks once corrupted this dataset's
-    // reassembly, so every device read the cloud as broken.
-    const _seg = String(apiUrl).split("/").filter(Boolean).pop() || "dataset";
-    return apiUrl.replace(/\/[^\/]+$/, "") + "/" + _seg + "_c" + idx;
+function _fbPath(apiUrl, name) {
+    return String(apiUrl).replace(/\/+$/, "") + "/" + name + ".json";
 }
 async function _mantlePut(url, obj) {
     const resp = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Mantle-Key': MANTLE_DB_KEY },
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(obj)
     });
     if (!resp.ok) throw new Error('cloud write failed: ' + resp.status);
-    const res = await resp.json().catch(() => ({}));
-    if (!res.success) throw new Error('cloud write rejected');
 }
 async function _mantleGetJson(url) {
-    const resp = await fetch(url, {
-        method: 'GET',
-        headers: { 'X-Mantle-Key': MANTLE_DB_KEY }
-    });
+    const resp = await fetch(url, { method: 'GET' });
     if (resp.status === 404) return { missing: true, data: null };
     if (resp.status === 429) { try { window._cloudCooldownUntil = Date.now() + 5 * 60 * 1000; } catch (e) {} throw new Error('cloud read failed: 429'); }
     if (!resp.ok) throw new Error('cloud read failed: ' + resp.status);
-    return { missing: false, data: await resp.json() };
+    const data = await resp.json();
+    if (data === null || data === undefined) return { missing: true, data: null };
+    return { missing: false, data: data };
 }
 async function mantleCloudPush(apiUrl, dataset) {
     try {
         const text = JSON.stringify(dataset);
-        const n = Math.max(1, Math.ceil(text.length / SYNC_CHUNK_CHARS));
-        for (let i = 0; i < n; i++) {
-            await _mantlePut(_syncChunkUrl(apiUrl, i), {
-                __chunk: i,
-                __chunks: n,
-                text: text.slice(i * SYNC_CHUNK_CHARS, (i + 1) * SYNC_CHUNK_CHARS)
-            });
-        }
+        // Data first, manifest last: a push interrupted halfway leaves
+        // the old manifest in place, so no reader ever validates a
+        // torn state (same crash-safety as the old chunk layout).
+        await _mantlePut(_fbPath(apiUrl, 'data'), text);
         const manifest = {
             __manifest: 1,
-            __chunks: n,
             __seq: Number(dataset.syncSeq || 0),
             __epoch: Number(dataset.syncEpoch || 0),
             __hash: datasetContentHash(dataset),
             __len: text.length,
             lastModifiedTimestamp: Number(dataset.lastModifiedTimestamp || Date.now())
         };
-        await _mantlePut(apiUrl, manifest);
+        await _mantlePut(_fbPath(apiUrl, 'meta'), manifest);
         _pullCache = { url: apiUrl, seq: manifest.__seq, hash: manifest.__hash, text: text };
         return { ok: true, json: async () => ({ success: true }) };
     } catch (e) {
@@ -8854,26 +8842,20 @@ async function mantleCloudPush(apiUrl, dataset) {
 }
 async function mantleCloudPull(apiUrl) {
     try {
-        const head = await _mantleGetJson(apiUrl);
+        const head = await _mantleGetJson(_fbPath(apiUrl, 'meta'));
         if (head.missing) return { ok: true, json: async () => ({ success: true, data: null }) };
         const doc = head.data;
-        if (!doc || doc.__manifest !== 1) {
-            // Legacy single-document dataset (pre-chunking cloud).
-            return { ok: true, json: async () => ({ success: true, data: doc }) };
-        }
+        if (!doc || doc.__manifest !== 1) throw new Error('cloud manifest malformed');
         if (_pullCache.url === apiUrl && _pullCache.seq === doc.__seq && _pullCache.hash === doc.__hash && _pullCache.text) {
             const cachedText = _pullCache.text;
             return { ok: true, json: async () => ({ success: true, data: JSON.parse(cachedText) }) };
         }
-        let text = "";
-        for (let i = 0; i < doc.__chunks; i++) {
-            const part = await _mantleGetJson(_syncChunkUrl(apiUrl, i));
-            if (part.missing || !part.data || typeof part.data.text !== 'string') throw new Error('chunk missing');
-            text += part.data.text;
-        }
-        if (text.length !== doc.__len) throw new Error('chunk length mismatch');
+        const body = await _mantleGetJson(_fbPath(apiUrl, 'data'));
+        if (body.missing || typeof body.data !== 'string') throw new Error('cloud data missing');
+        const text = body.data;
+        if (text.length !== doc.__len) throw new Error('cloud data length mismatch');
         const data = JSON.parse(text);
-        if (datasetContentHash(data) !== doc.__hash) throw new Error('chunk hash mismatch');
+        if (datasetContentHash(data) !== doc.__hash) throw new Error('cloud data hash mismatch');
         _pullCache = { url: apiUrl, seq: doc.__seq, hash: doc.__hash, text: text };
         return { ok: true, json: async () => ({ success: true, data: data }) };
     } catch (e) {
