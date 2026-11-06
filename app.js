@@ -701,7 +701,7 @@ function verifyOtpAndSetNewPassword(event) {
 // the existing OTP endpoint (same as the OTP recovery system).
 const SECURITY_MASTER_PIN = "Walton2026";
 const SECURITY_EMAIL = "asifjaved81@gmail.com";
-const SECURITY_EXPECTED_APPJS_HASH = "409534d4"; // __SECURITY_HASH_LINE__ (replaced at build time)
+const SECURITY_EXPECTED_APPJS_HASH = "40c0483d"; // __SECURITY_HASH_LINE__ (replaced at build time)
 let securityTamperDetected = false;
 let securitySessionPin = null;
 
@@ -8726,7 +8726,7 @@ const SYNC_STORAGE_KEY = "GHS_WALTON_TIMETABLE_SYNC_CONFIG_V1";
 const DEFAULT_CLOUD_API_URL = "https://mantledb.sh/v2/ghs-walton-timetable-23608967/walton_v2";
 // Hosted build: the browser talks to MantleDB directly (no local proxy server),
 // so every cloud request carries this access key in the X-Mantle-Key header.
-const HOSTED_BUILD_ID = "20261105-19";
+const HOSTED_BUILD_ID = "20261106-20";
 // Fix #11: the verified cloud dataset is pinned by content hash;
 // its descendants carry this generation number.
 const PINNED_CLOUD_HASH = "84ecd4798a03410f:257923";
