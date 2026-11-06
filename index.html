@@ -2617,7 +2617,8 @@
             </div>
             <div class="staff-step space-y-3 hidden" id="emailStepOtp">
                 <p class="text-xs font-bold text-slate-600 text-center">First time? Verify your email with an OTP and create your password.</p>
-                <button type="button" onclick="emailSendOtp()" class="w-full py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-extrabold shadow text-xs">Send OTP to my Email</button>
+                <button type="button" id="emailSendOtpBtn" onclick="emailSendOtp()" class="w-full py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-extrabold shadow text-xs disabled:opacity-60">Send OTP to my Email</button>
+                <p id="emailOtpSent" class="text-emerald-700 bg-emerald-50 border border-emerald-300 rounded-xl px-3 py-2 text-[11px] font-bold text-center" style="display:none"></p>
                 <div id="emailOtpFields" class="hidden space-y-3">
                     <div>
                         <label class="block font-bold text-slate-700 text-xs mb-1">Enter OTP (received in your email):</label>

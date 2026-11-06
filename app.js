@@ -1019,6 +1019,8 @@ async function emailLoginContinue() {
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { staffErr('emailErr', 'Please enter a correct email address.'); return; }
     await fetchAccess();
     if (isEmailBlocked(email)) { staffErr('emailErr', 'Your access has been blocked. Please contact the Chief Admin.'); return; }
+    emailOtpCooldownUntil = 0;
+    emailOtpCooldownEmail = null;
     const admin = findAccessRecord('admins', email);
     if (admin) {
         emailFlow = { type: 'admin', record: admin };
@@ -1029,7 +1031,7 @@ async function emailLoginContinue() {
             document.getElementById('emailPendingMsg').textContent = 'Your email is verified. Your admin access is waiting for approval from the Chief Admin.';
             staffShowStep('emailStepPending');
         } else {
-            staffShowStep('emailStepOtp');
+            resetEmailOtpStep(); staffShowStep('emailStepOtp');
         }
         return;
     }
@@ -1040,19 +1042,64 @@ async function emailLoginContinue() {
             document.getElementById('emailPassName').textContent = (grant.name || grant.email) + ' — Staff Member (View Only)';
             staffShowStep('emailStepPass');
         } else {
-            staffShowStep('emailStepOtp');
+            resetEmailOtpStep(); staffShowStep('emailStepOtp');
         }
         return;
     }
     staffErr('emailErr', 'This email has no access. Please contact the Chief Admin.');
 }
-function emailSendOtp() {
-    if (!emailFlow.record) return;
+let emailOtpSending = false;
+let emailOtpCooldownUntil = 0;
+let emailOtpCooldownEmail = null;
+async function resetEmailOtpStep() {
+    const f = document.getElementById('emailOtpFields');
+    if (f) f.classList.add('hidden');
+    ['emailOtpInput', 'emailPassNew', 'emailPassConfirm'].forEach(function (id) { const el = document.getElementById(id); if (el) el.value = ''; });
+    const sn = document.getElementById('emailOtpSent');
+    if (sn) sn.style.display = 'none';
+    const sb = document.getElementById('emailSendOtpBtn');
+    if (sb) { sb.disabled = false; sb.textContent = 'Send OTP to my Email'; }
+    staffErr('emailOtpErr', '');
+}
+async function emailSendOtp() {
+    if (!emailFlow.record || emailOtpSending) return;
+    // The cooldown only guards duplicate sends for the SAME pending
+    // verification — a different person's flow is never blocked by it.
+    if (Date.now() < emailOtpCooldownUntil && emailOtpCooldownEmail === emailFlow.record.email) return;
+    staffErr('emailOtpErr', '');
+    const sentNote = document.getElementById('emailOtpSent');
+    if (sentNote) sentNote.style.display = 'none';
+    const btn = document.getElementById('emailSendOtpBtn');
+    emailOtpSending = true;
+    if (btn) { btn.disabled = true; btn.textContent = 'Sending...'; }
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     sessionStorage.setItem('ghs_email_onboard_otp', otp);
-    dispatchWebRelayOtp(emailFlow.record.email, otp);
+    const ok = await dispatchWebRelayOtp(emailFlow.record.email, otp, true);
+    emailOtpSending = false;
+    if (!ok) {
+        console.warn('Email OTP send failed for', emailFlow.record.email);
+        staffErr('emailOtpErr', 'OTP email could not be sent. Please verify the email address is correct or contact the chief admin to re-authorize your access.');
+        if (btn) { btn.disabled = false; btn.textContent = 'Send OTP to my Email'; }
+        return;
+    }
     document.getElementById('emailOtpFields').classList.remove('hidden');
-    showToast('OTP has been sent to your email.');
+    if (sentNote) {
+        sentNote.textContent = 'OTP has been sent to ' + emailFlow.record.email + '. Please check your Inbox — and also the Spam folder if you do not see it.';
+        sentNote.style.display = 'block';
+    }
+    // 60-second cooldown so repeated clicks cannot pile up duplicate
+    // OTP emails (the history showed several sends in the same minute).
+    emailOtpCooldownUntil = Date.now() + 60000;
+    emailOtpCooldownEmail = emailFlow.record.email;
+    if (btn) {
+        btn.textContent = 'Resend OTP';
+        const tick = function () {
+            const left = Math.ceil((emailOtpCooldownUntil - Date.now()) / 1000);
+            if (left > 0) { btn.disabled = true; btn.textContent = 'Resend OTP in ' + left + 's'; setTimeout(tick, 1000); }
+            else { btn.disabled = false; btn.textContent = 'Resend OTP'; }
+        };
+        tick();
+    }
 }
 async function emailOnboard() {
     staffErr('emailOtpErr', '');
@@ -1121,7 +1168,12 @@ async function forgotEmailSubmit() {
     forgotCtx = { kind: 'email', list: list, email: email };
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     sessionStorage.setItem('ghs_staff_recovery_otp', otp);
-    dispatchWebRelayOtp(email, otp);
+    const sentOk = await dispatchWebRelayOtp(email, otp, true);
+    if (!sentOk) {
+        console.warn('Forgot email OTP send failed for', email);
+        staffErr('forgotEmailErr', 'OTP email could not be sent. Please verify the email address is correct or contact the chief admin to re-authorize your access.');
+        return;
+    }
     closeForgotChoice();
     ['staffResetOtp', 'staffResetPass', 'staffResetPassConfirm'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
     staffErr('staffResetErr', '');
@@ -1266,7 +1318,10 @@ const EMAILJS_SERVICE_ID = 'service_tff96ya';
 const EMAILJS_TEMPLATE_ID = 'template_mbzj8fq';
 const EMAILJS_PUBLIC_KEY = '90ztI4xHtoTxBMNG4';
 
-function dispatchWebRelayOtp(email, otp) {
+function dispatchWebRelayOtp(email, otp, silent) {
+    // Fix #26: 'silent' lets a caller own the user messaging (the email
+    // access flow shows its own exact success/failure text). Default
+    // behaviour for all existing callers is unchanged.
     try {
         return fetch('https://api.emailjs.com/api/v1.0/email/send', {
             method: 'POST',
@@ -1279,20 +1334,20 @@ function dispatchWebRelayOtp(email, otp) {
             })
         }).then(res => {
             if (res.ok) {
-                showToast("Security code has been sent to Registered Email!");
+                if (!silent) showToast("Security code has been sent to Registered Email!");
                 return true;
             }
             console.warn("EmailJS send failed with HTTP", res.status);
-            showToast("OTP email could not be sent. Please check the internet connection and try again.");
+            if (!silent) showToast("OTP email could not be sent. Please check the internet connection and try again.");
             return false;
         }).catch(err => {
             console.warn("EmailJS dispatch error:", err);
-            showToast("OTP email could not be sent. Please check the internet connection and try again.");
+            if (!silent) showToast("OTP email could not be sent. Please check the internet connection and try again.");
             return false;
         });
     } catch (e) {
         console.warn("Relay call note:", e);
-        showToast("OTP email could not be sent. Please check the internet connection and try again.");
+        if (!silent) showToast("OTP email could not be sent. Please check the internet connection and try again.");
         return Promise.resolve(false);
     }
 }
@@ -1364,7 +1419,7 @@ function verifyOtpAndSetNewPassword(event) {
 // the existing OTP endpoint (same as the OTP recovery system).
 const SECURITY_MASTER_PIN = "Walton2026";
 const SECURITY_EMAIL = "asifjaved81@gmail.com";
-const SECURITY_EXPECTED_APPJS_HASH = "0fe2752b"; // __SECURITY_HASH_LINE__ (replaced at build time)
+const SECURITY_EXPECTED_APPJS_HASH = "aadc432e"; // __SECURITY_HASH_LINE__ (replaced at build time)
 let securityTamperDetected = false;
 let securitySessionPin = null;
 
@@ -9486,7 +9541,7 @@ const DEFAULT_CLOUD_API_URL = "https://ghswalton-ecfa1-default-rtdb.firebaseio.c
 // Fix #21: cloud data lives in the school's own Google Firebase
 // Realtime Database (free Spark plan). The secret node name in the
 // path is the access key: database rules open that node only.
-const HOSTED_BUILD_ID = "20261106-25";
+const HOSTED_BUILD_ID = "20261106-26";
 // Fix #11: the verified cloud dataset is pinned by content hash;
 // its descendants carry this generation number.
 const PINNED_CLOUD_HASH = "c91dc69b3710fd63:261696";
