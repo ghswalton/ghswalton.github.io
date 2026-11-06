@@ -701,7 +701,7 @@ function verifyOtpAndSetNewPassword(event) {
 // the existing OTP endpoint (same as the OTP recovery system).
 const SECURITY_MASTER_PIN = "Walton2026";
 const SECURITY_EMAIL = "asifjaved81@gmail.com";
-const SECURITY_EXPECTED_APPJS_HASH = "398f26df"; // __SECURITY_HASH_LINE__ (replaced at build time)
+const SECURITY_EXPECTED_APPJS_HASH = "f9f6fd98"; // __SECURITY_HASH_LINE__ (replaced at build time)
 let securityTamperDetected = false;
 let securitySessionPin = null;
 
@@ -8713,10 +8713,10 @@ function resetAllSystemDataAction() {
 // a shutdown beacon when the tab closes.
 
 // =========================================================================
-// 14. MULTI-PC AUTOMATIC CLOUD SYNC & GOOGLE DRIVE ENGINE (MantleDB Cloud REST)
+// 14. MULTI-PC AUTOMATIC CLOUD SYNC & GOOGLE DRIVE ENGINE (Firebase Cloud)
 // =========================================================================
 // Features:
-// 1. Direct Online Cloud Auto-Sync (MantleDB REST Endpoint) across Home PC & School PC
+// 1. Direct Online Cloud Auto-Sync (Firebase REST Endpoint) across Home PC & School PC
 // 2. Intelligent Dataset Merger (Smart Merge) preserving work from both locations
 // 3. Pre-Sync Safety Snapshots for zero data loss guarantee
 // 4. Offline Sync Package (WhatsApp / USB Transfer)
@@ -8727,7 +8727,7 @@ const DEFAULT_CLOUD_API_URL = "https://ghswalton-ecfa1-default-rtdb.firebaseio.c
 // Fix #21: cloud data lives in the school's own Google Firebase
 // Realtime Database (free Spark plan). The secret node name in the
 // path is the access key: database rules open that node only.
-const HOSTED_BUILD_ID = "20261106-21";
+const HOSTED_BUILD_ID = "20261106-22";
 // Fix #11: the verified cloud dataset is pinned by content hash;
 // its descendants carry this generation number.
 const PINNED_CLOUD_HASH = "c91dc69b3710fd63:261696";
@@ -9419,7 +9419,7 @@ function triggerBackgroundSync(data, force = false) {
         let cloudSuccess = false;
         let folderSuccess = false;
 
-        // 1. Online Cloud Auto-Sync (MantleDB)
+        // 1. Online Cloud Auto-Sync (Firebase)
         if (syncConfig.internetCloudEnabled && syncConfig.cloudApiUrl) {
             try {
                 const resp = await mantleCloudPush(syncConfig.cloudApiUrl, dataset);
