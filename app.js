@@ -667,26 +667,36 @@ function staffMobileMask(el) {
     const d = String(el.value || '').replace(/\D/g, '').slice(0, 11);
     el.value = d.length > 4 ? d.slice(0, 4) + '-' + d.slice(4) : d;
 }
+// Fix #24: the main admin's registered mobile — Staff Login accepts it
+// and resolves it to the admin's own teacher record, so the admin can
+// visit the website exactly as a staff member does.
+const ADMIN_STAFF_MOBILE_KEY = '03214221739';
+function findAdminTeacherRecord() {
+    const list = (typeof teachersList !== 'undefined' ? teachersList : []);
+    return list.find(t => t.id === 'T32') || list.find(t => /muhammad asif javed/i.test(t.name || '')) || null;
+}
 async function staffContinue() {
     staffErr('staffMobileErr', '');
     const mob = document.getElementById('staffMobileInput').value.trim();
     await fetchStaffAccounts();
-    const teacher = findTeacherByMobile(mob);
+    staffFlow.account = findStaffAccountByMobile(mob);
+    if (staffFlow.account) {
+        staffFlow.teacher = (typeof teachersList !== 'undefined' ? teachersList : []).find(t => t.id === staffFlow.account.teacherId) || null;
+        document.getElementById('staffLoginName').textContent = staffFlow.account.name + ' (' + (staffFlow.account.designation || '') + ')';
+        staffShowStep('staffStepLogin');
+        setTimeout(function () { const i = document.getElementById('staffLoginPassInput'); if (i) i.focus(); }, 50);
+        return;
+    }
+    let teacher = findTeacherByMobile(mob);
+    if (!teacher && normalizeMobileKey(mob) === ADMIN_STAFF_MOBILE_KEY) teacher = findAdminTeacherRecord();
     if (!teacher) {
         staffErr('staffMobileErr', 'This mobile number is not registered in Teachers & Workload. Please enter the correct mobile number or contact the admin.');
         return;
     }
     staffFlow.teacher = teacher;
-    staffFlow.account = findStaffAccountByMobile(mob);
-    if (staffFlow.account) {
-        document.getElementById('staffLoginName').textContent = teacher.name + ' (' + (teacher.designation || '') + ')';
-        staffShowStep('staffStepLogin');
-        setTimeout(function () { const i = document.getElementById('staffLoginPassInput'); if (i) i.focus(); }, 50);
-    } else {
-        document.getElementById('staffCreateName').value = teacher.name || '';
-        document.getElementById('staffCreateDesignation').value = teacher.designation || '';
-        staffShowStep('staffStepCreate');
-    }
+    document.getElementById('staffCreateName').value = teacher.name || '';
+    document.getElementById('staffCreateDesignation').value = teacher.designation || '';
+    staffShowStep('staffStepCreate');
 }
 function staffDoLogin() {
     staffErr('staffLoginErr', '');
@@ -729,7 +739,7 @@ async function staffCreatePassword() {
     if (p1 !== p2) { staffErr('staffCreateErr', 'Password and Confirm Password do not match.'); return; }
     const t = staffFlow.teacher;
     if (!t) { staffErr('staffCreateErr', 'Session expired. Please start again.'); return; }
-    const acc = { teacherId: t.id, name: t.name, designation: t.designation || '', mobile: t.mobileNumber, email: email, password: p1, createdAt: new Date().toISOString() };
+    const acc = { teacherId: t.id, name: t.name, designation: t.designation || '', mobile: ((document.getElementById('staffMobileInput') || {}).value || '').trim() || t.mobileNumber, email: email, password: p1, createdAt: new Date().toISOString() };
     staffAccountsList = staffAccountsList.filter(a => normalizeMobileKey(a.mobile) !== normalizeMobileKey(acc.mobile));
     staffAccountsList.push(acc);
     await pushStaffAccounts();
@@ -850,12 +860,32 @@ function applyRoleUi() {
     // for staff too — only admin logins ever see a Control Panel button.
     const navBtn = document.querySelector('.tab-btn[data-tab="distribution"]');
     if (navBtn) navBtn.style.display = isStaffSession() ? 'none' : '';
+    const subBtn = document.querySelector('.tab-btn[data-tab="substitution"]');
+    if (subBtn) subBtn.style.display = isStaffSession() ? 'none' : '';
     if (isStaffSession()) enforceStaffLockdown();
 }
 const STAFF_BLOCK_ONCLICK = /(save|add|edit|delete|remove|generate|adjust|import|upload|restore|freeze|assign|create|update|clear|shuffle|submit|send)/i;
 const STAFF_ALLOW_ONCLICK = /(switchTab|print|export|share|slip|view|download)/i;
 function enforceStaffLockdown() {
     if (!isStaffSession()) return;
+    // Fix #24: re-hide the role-hidden chrome on EVERY pass — the
+    // appearance system periodically resets tab button display, so a
+    // one-time hide at login is not enough.
+    const _cpCard = document.getElementById('controlPanelCard');
+    if (_cpCard) _cpCard.style.display = 'none';
+    ['distribution', 'substitution'].forEach(function (t) {
+        const b = document.querySelector('.tab-btn[data-tab="' + t + '"]');
+        if (b) b.style.display = 'none';
+    });
+    // Teacher-Wise Slip: the staff member's dropdown loses the
+    // "View All Teachers" option and is locked to his own name.
+    const slipSel = document.getElementById('teacherFilterSelect');
+    if (slipSel && currentStaffAccount && currentStaffAccount.teacherId) {
+        const allOpt = slipSel.querySelector('option[value="ALL"]');
+        if (allOpt) allOpt.remove();
+        slipSel.value = currentStaffAccount.teacherId;
+        slipSel.disabled = true;
+    }
     document.querySelectorAll('section[id^="tab-"] input, section[id^="tab-"] select, section[id^="tab-"] textarea').forEach(el => {
         if (el.dataset.viewAllow === '1' || el.closest('[data-view-allow]')) return;
         if (el.tagName === 'SELECT' && /(view|slip|class|teacher|period)/i.test(el.id || '')) return;
@@ -1025,7 +1055,7 @@ function verifyOtpAndSetNewPassword(event) {
 // the existing OTP endpoint (same as the OTP recovery system).
 const SECURITY_MASTER_PIN = "Walton2026";
 const SECURITY_EMAIL = "asifjaved81@gmail.com";
-const SECURITY_EXPECTED_APPJS_HASH = "86676239"; // __SECURITY_HASH_LINE__ (replaced at build time)
+const SECURITY_EXPECTED_APPJS_HASH = "aefc981d"; // __SECURITY_HASH_LINE__ (replaced at build time)
 let securityTamperDetected = false;
 let securitySessionPin = null;
 
@@ -1889,7 +1919,7 @@ function renderAllViews() {
     renderStaffStatementView();
     renderOfflineFilesList();
     try { initStickyHScrollbars(); } catch (e) {}
-    try { if (isStaffSession()) enforceStaffLockdown(); } catch (e) {}
+    try { if (isStaffSession()) applyRoleUi(); } catch (e) {}
 }
 
 // Fix #23 Task 2: sticky horizontal scroll strip for the two widest
@@ -2060,6 +2090,10 @@ function applyAppearanceSettings() {
             if (b) b.style.display = 'none';
         });
     });
+    // Fix #24: this function resets every tab button's display, which
+    // used to resurrect the staff-hidden Control Panel tab a little
+    // after login. Re-assert the role UI whenever it runs.
+    try { if (typeof isStaffSession === 'function' && isStaffSession()) applyRoleUi(); } catch (e) {}
 }
 function buildAppearanceSettingsUI() {
     const sel = document.getElementById('appearanceFontSelect');
@@ -4132,7 +4166,12 @@ function getSubjectForTeacherSlip(teacherId, periodId) {
 // ==========================================
 function renderTeacherWiseCards() {
     if (!scheduleResult) return;
-    const filter = document.getElementById('teacherFilterSelect').value || "ALL";
+    let filter = document.getElementById('teacherFilterSelect').value || "ALL";
+    // Fix #24: whatever the dropdown says, a staff session renders
+    // ONLY the logged-in teacher's own slip.
+    if (typeof isStaffSession === 'function' && isStaffSession()) {
+        filter = (currentStaffAccount && currentStaffAccount.teacherId) ? currentStaffAccount.teacherId : '__none__';
+    }
     const container = document.getElementById('printable-teacher-cards-area');
 
     const teachersToRender = (filter === "ALL")
@@ -9138,7 +9177,7 @@ const DEFAULT_CLOUD_API_URL = "https://ghswalton-ecfa1-default-rtdb.firebaseio.c
 // Fix #21: cloud data lives in the school's own Google Firebase
 // Realtime Database (free Spark plan). The secret node name in the
 // path is the access key: database rules open that node only.
-const HOSTED_BUILD_ID = "20261106-23";
+const HOSTED_BUILD_ID = "20261106-24";
 // Fix #11: the verified cloud dataset is pinned by content hash;
 // its descendants carry this generation number.
 const PINNED_CLOUD_HASH = "c91dc69b3710fd63:261696";
