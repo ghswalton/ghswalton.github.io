@@ -1665,7 +1665,7 @@ function verifyOtpAndSetNewPassword(event) {
 // the existing OTP endpoint (same as the OTP recovery system).
 const SECURITY_MASTER_PIN = "Walton2026";
 const SECURITY_EMAIL = "asifjaved81@gmail.com";
-const SECURITY_EXPECTED_APPJS_HASH = "4b01ffdd"; // __SECURITY_HASH_LINE__ (replaced at build time)
+const SECURITY_EXPECTED_APPJS_HASH = "7a4b2b82"; // __SECURITY_HASH_LINE__ (replaced at build time)
 let securityTamperDetected = false;
 let securitySessionPin = null;
 
@@ -9743,7 +9743,7 @@ const DEFAULT_CLOUD_API_URL = "https://ghswalton-ecfa1-default-rtdb.firebaseio.c
 // Fix #21: cloud data lives in the school's own Google Firebase
 // Realtime Database (free Spark plan). The secret node name in the
 // path is the access key: database rules open that node only.
-const HOSTED_BUILD_ID = "20261107-29";
+const HOSTED_BUILD_ID = "20261107-30";
 // Fix #11: the verified cloud dataset is pinned by content hash;
 // its descendants carry this generation number.
 const PINNED_CLOUD_HASH = "c91dc69b3710fd63:261696";
@@ -10055,6 +10055,63 @@ async function checkForNewBuild() {
     } catch (e) { /* offline or file missing -- try again next cycle */ }
 }
 
+// ===== Fix #30: realtime sync listener (replaces 20s polling) =====
+let _liveSyncStarted = false;
+let _syncFallbackStarted = false;
+function startLiveSyncListener() {
+    if (_liveSyncStarted) return;
+    _liveSyncStarted = true;
+    try {
+        if (!window.firebase || !firebase.initializeApp || !firebase.database) throw new Error('Firebase SDK not available');
+        const base = syncConfig.cloudApiUrl || DEFAULT_CLOUD_API_URL;
+        const u = new URL(base);
+        const fbApp = (firebase.apps && firebase.apps.length) ? firebase.app() : firebase.initializeApp({ databaseURL: u.origin });
+        const metaRef = fbApp.database().ref(u.pathname.replace(/^\/+|\/+$/g, '') + '/meta');
+        metaRef.on('value', function () {
+            // The manifest changed: another device saved an edit.
+            // Run the standard checker — it pulls and applies the new
+            // data (or pushes local changes) exactly as before.
+            try { checkAutoSyncOnStartup(true); } catch (e) {}
+            try { checkForNewBuild(); } catch (e) {}
+        }, function (err) {
+            console.warn('Live sync listener failed; falling back to periodic checks.', err);
+            startSyncPollingFallback();
+        });
+    } catch (e) {
+        startSyncPollingFallback();
+    }
+}
+function startSyncPollingFallback() {
+    // Emergency fallback ONLY when the live listener could not be
+    // established at all (SDK blocked/offline at start).
+    if (_syncFallbackStarted) return;
+    _syncFallbackStarted = true;
+    setInterval(() => {
+        if (typeof document !== 'undefined' && document.hidden) return;
+        checkAutoSyncOnStartup(true);
+        checkForNewBuild();
+    }, 20000);
+}
+// Edit guard: true while the user is typing in a field or any
+// dialog is open. A remote update is never applied over that.
+function isUserMidEdit() {
+    try {
+        const ae = document.activeElement;
+        if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT' || ae.isContentEditable)) return true;
+        if (document.querySelector('[id$="Modal"]:not(.hidden), [id$="modal"]:not(.hidden)')) return true;
+    } catch (e) {}
+    return false;
+}
+let _deferredRemoteSyncData = null;
+function tryApplyDeferredSync() {
+    if (!_deferredRemoteSyncData || isUserMidEdit()) return;
+    const data = _deferredRemoteSyncData;
+    _deferredRemoteSyncData = null;
+    applyRemoteSyncData(data, true, "Online Cloud", true);
+}
+document.addEventListener('focusout', () => setTimeout(tryApplyDeferredSync, 0));
+document.addEventListener('pointerup', () => setTimeout(tryApplyDeferredSync, 0));
+
 async function initSyncSystem() {
     loadSyncConfig();
     updateSyncBadge("idle", "Checking cloud...");
@@ -10081,15 +10138,10 @@ async function initSyncSystem() {
             }
         });
 
-        // Fix #19: 20-second checks, paused while the tab is hidden
-        // (the visibility handler re-checks on return). The cloud's
-        // free tier allows 10,000 reads a day; a 10-second poll from
-        // every open tab exhausted it and every device went offline.
-        setInterval(() => {
-            if (typeof document !== 'undefined' && document.hidden) return;
-            checkAutoSyncOnStartup(true);
-            checkForNewBuild();
-        }, 20000);
+        // Fix #30: realtime listener instead of the old 20-second
+        // polling (Fix #19). The focus/visibility handlers above
+        // still re-check when a tab returns to the foreground.
+        startLiveSyncListener();
 
     } catch (err) {
         console.warn("Sync startup failed:", err);
@@ -10239,6 +10291,14 @@ async function checkAutoSyncOnStartup(silent = false) {
 function applyRemoteSyncData(dataToApply, autoApply = false, sourceName = "Cloud", fromCloud = false) {
     const data = dataToApply || window._pendingRemoteSyncData;
     if (!data || (!data.settings && !data.teachers)) return;
+    // Fix #30: a cloud update never lands in the middle of the
+    // user's own editing (typing / an open dialog). It is held and
+    // applied the moment they finish — see tryApplyDeferredSync.
+    if (fromCloud && isUserMidEdit()) {
+        _deferredRemoteSyncData = data;
+        updateSyncBadge("idle", "Update received — will apply when you finish editing");
+        return;
+    }
     const _recvHash = fromCloud ? datasetContentHash(data) : "";
 
     try {
