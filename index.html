@@ -27,9 +27,22 @@
     <!-- Custom Styles -->
     <link rel="stylesheet" href="styles.css">
     <style id="fix32Style">
-        /* Fix #32: golden role text + every top header button one equal size */
+        /* Fix #32: golden role text. Fix #33: the top header buttons
+           share one smart, exactly-equal style — fixed height that
+           cannot grow (labels never wrap), even corners, a subtle
+           inset highlight and shadow, gentle hover brightening.
+           Each button keeps its own colour identity. */
         #roleBadgeText, #roleBadgeBtn i { color: #FFD34D !important; }
-        #headerSyncBadge, #roleBadgeBtn, #logoutBtn, #fingerprintActivateBtn, #saveDataTopBtn { width: 196px; height: 34px; justify-content: center; box-sizing: border-box; }
+        #headerSyncBadge, #roleBadgeBtn, #logoutBtn, #fingerprintActivateBtn, #saveDataTopBtn {
+            width: 196px; height: 34px; max-height: 34px; box-sizing: border-box;
+            justify-content: center; align-items: center; white-space: nowrap; overflow: hidden;
+            border-radius: 0.75rem; letter-spacing: 0.01em;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.08);
+            transition: filter 0.15s ease, border-color 0.15s ease;
+        }
+        #headerSyncBadge:hover, #roleBadgeBtn:hover, #logoutBtn:hover, #fingerprintActivateBtn:hover, #saveDataTopBtn:hover {
+            filter: brightness(1.2); border-color: rgba(125,211,252,0.7);
+        }
     </style>
 </head>
 <body class="bg-slate-100 text-slate-800 min-h-screen flex flex-col">
@@ -86,7 +99,7 @@
                     </button>
 
                     <!-- Permanent Save All Data Button (Fix #32: under Logout) -->
-                    <button id="saveDataTopBtn" onclick="permanentSaveAndSyncAllAction()" class="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black text-xs py-1.5 px-3 rounded-xl shadow-md flex items-center gap-1.5 transition active:scale-95 border border-emerald-400/50" title="Permanent Save All Data to Cloud and Disk">
+                    <button id="saveDataTopBtn" style="display:none" onclick="permanentSaveAndSyncAllAction()" class="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black text-xs py-1.5 px-3 rounded-xl shadow-md flex items-center gap-1.5 transition active:scale-95 border border-emerald-400/50" title="Permanent Save All Data to Cloud and Disk">
                         <i class="fa-solid fa-floppy-disk text-amber-300"></i>
                         <span>Save Data</span>
                     </button>

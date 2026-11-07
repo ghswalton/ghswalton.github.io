@@ -1485,6 +1485,10 @@ function applyRoleUi() {
     if (logoutBtn) { logoutBtn.classList.toggle('hidden', !sessionRole); logoutBtn.classList.toggle('flex', !!sessionRole); }
     try { refreshFingerprintUi(); } catch (e) {}
     try { updateRoleBadge(); } catch (e) {}
+    // Fix #33: Save Data is an admin-only button — Chief Admin and
+    // Admin sessions see it; Staff Member / Email Member sessions
+    // never do (and neither does the signed-out gate).
+    try { const _sv = document.getElementById('saveDataTopBtn'); if (_sv) _sv.style.display = (sessionRole === 'admin') ? '' : 'none'; } catch (e) {}
     if (isStaffSession()) enforceStaffLockdown();
 }
 const STAFF_BLOCK_ONCLICK = /(save|add|edit|delete|remove|generate|adjust|import|upload|restore|freeze|assign|create|update|clear|shuffle|submit|send)/i;
@@ -1684,7 +1688,7 @@ function verifyOtpAndSetNewPassword(event) {
 // the existing OTP endpoint (same as the OTP recovery system).
 const SECURITY_MASTER_PIN = "Walton2026";
 const SECURITY_EMAIL = "asifjaved81@gmail.com";
-const SECURITY_EXPECTED_APPJS_HASH = "60f4f32e"; // __SECURITY_HASH_LINE__ (replaced at build time)
+const SECURITY_EXPECTED_APPJS_HASH = "51b6c235"; // __SECURITY_HASH_LINE__ (replaced at build time)
 let securityTamperDetected = false;
 let securitySessionPin = null;
 
@@ -9762,7 +9766,7 @@ const DEFAULT_CLOUD_API_URL = "https://ghswalton-ecfa1-default-rtdb.firebaseio.c
 // Fix #21: cloud data lives in the school's own Google Firebase
 // Realtime Database (free Spark plan). The secret node name in the
 // path is the access key: database rules open that node only.
-const HOSTED_BUILD_ID = "20261107-32";
+const HOSTED_BUILD_ID = "20261107-33";
 // Fix #11: the verified cloud dataset is pinned by content hash;
 // its descendants carry this generation number.
 const PINNED_CLOUD_HASH = "c91dc69b3710fd63:261696";
