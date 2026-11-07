@@ -231,6 +231,24 @@ let currentEmailAdmin = null;
 let currentEmailMember = null;
 function isStaffSession() { return sessionRole === 'staff'; }
 function isChiefAdminSession() { return sessionRole === 'admin' && isChiefAdmin; }
+// ===== Fix #31: role button under the sync badge =====
+// Automatically shows who is signed in, in the owner's words:
+// Chief Admin -> "You are Chief Admin", Admin -> "You are Admin",
+// Staff Member -> "You are Staff Member", email login -> "Email
+// Membership". Hidden before login. Refreshed from applyRoleUi(),
+// which every login path and the session restore already call.
+function updateRoleBadge() {
+    const btn = document.getElementById('roleBadgeBtn');
+    const txt = document.getElementById('roleBadgeText');
+    if (!btn || !txt) return;
+    let label = '';
+    if (sessionRole === 'admin' && isChiefAdmin) label = 'You are Chief Admin';
+    else if (sessionRole === 'admin' && currentEmailAdmin) label = 'You are Admin';
+    else if (sessionRole === 'staff' && currentStaffAccount) label = 'You are Staff Member';
+    else if (sessionRole === 'staff' && currentEmailMember) label = 'Email Membership';
+    if (label) { txt.textContent = label; btn.style.display = 'inline-flex'; }
+    else { txt.textContent = ''; btn.style.display = 'none'; }
+}
 // ===== Fix #27: login session persistence (survives page refresh) =====
 // Only the identity is stored — never a password. On boot the saved
 // identity is re-validated against the cloud account lists, so a
@@ -1466,6 +1484,7 @@ function applyRoleUi() {
     const logoutBtn = document.getElementById('logoutBtn');
     if (logoutBtn) { logoutBtn.classList.toggle('hidden', !sessionRole); logoutBtn.classList.toggle('flex', !!sessionRole); }
     try { refreshFingerprintUi(); } catch (e) {}
+    try { updateRoleBadge(); } catch (e) {}
     if (isStaffSession()) enforceStaffLockdown();
 }
 const STAFF_BLOCK_ONCLICK = /(save|add|edit|delete|remove|generate|adjust|import|upload|restore|freeze|assign|create|update|clear|shuffle|submit|send)/i;
@@ -1665,7 +1684,7 @@ function verifyOtpAndSetNewPassword(event) {
 // the existing OTP endpoint (same as the OTP recovery system).
 const SECURITY_MASTER_PIN = "Walton2026";
 const SECURITY_EMAIL = "asifjaved81@gmail.com";
-const SECURITY_EXPECTED_APPJS_HASH = "7a4b2b82"; // __SECURITY_HASH_LINE__ (replaced at build time)
+const SECURITY_EXPECTED_APPJS_HASH = "ee787b4d"; // __SECURITY_HASH_LINE__ (replaced at build time)
 let securityTamperDetected = false;
 let securitySessionPin = null;
 
@@ -9743,7 +9762,7 @@ const DEFAULT_CLOUD_API_URL = "https://ghswalton-ecfa1-default-rtdb.firebaseio.c
 // Fix #21: cloud data lives in the school's own Google Firebase
 // Realtime Database (free Spark plan). The secret node name in the
 // path is the access key: database rules open that node only.
-const HOSTED_BUILD_ID = "20261107-30";
+const HOSTED_BUILD_ID = "20261107-31";
 // Fix #11: the verified cloud dataset is pinned by content hash;
 // its descendants carry this generation number.
 const PINNED_CLOUD_HASH = "c91dc69b3710fd63:261696";

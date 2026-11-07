@@ -61,9 +61,16 @@
                 <!-- Live Date, Academic Session, EMIS & Cloud Sync Controls -->
                 <div class="flex flex-wrap items-center justify-center md:justify-end gap-2 text-right">
                     <!-- Live Cloud & Multi-PC Sync Status Badge -->
-                    <div id="headerSyncBadge" onclick="openCloudSyncModal()" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold transition-all cursor-pointer bg-slate-800/90 border-slate-700 text-slate-200 hover:bg-slate-700 hover:border-sky-400 shadow-sm" title="Home and Office PC Cloud Auto-Sync (Cloud Sync Center)">
-                        <i class="fa-solid fa-cloud text-sky-400" id="headerSyncIcon"></i>
-                        <span id="headerSyncBadgeText">Cloud Sync</span>
+                    <div class="flex flex-col items-center gap-1">
+                        <div id="headerSyncBadge" onclick="openCloudSyncModal()" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold transition-all cursor-pointer bg-slate-800/90 border-slate-700 text-slate-200 hover:bg-slate-700 hover:border-sky-400 shadow-sm" title="Home and Office PC Cloud Auto-Sync (Cloud Sync Center)">
+                            <i class="fa-solid fa-cloud text-sky-400" id="headerSyncIcon"></i>
+                            <span id="headerSyncBadgeText">Cloud Sync</span>
+                        </div>
+                        <!-- Fix #31: signed-in role, shown automatically by login type -->
+                        <button id="roleBadgeBtn" type="button" style="display:none" class="items-center gap-1.5 px-3 py-1 rounded-xl border text-xs font-bold bg-indigo-900/80 border-indigo-700 text-indigo-100 shadow-sm" title="Your login role">
+                            <i class="fa-solid fa-user-shield text-indigo-300"></i>
+                            <span id="roleBadgeText"></span>
+                        </button>
                     </div>
 
                     <!-- Logout (Fix #27): ends the persisted login session -->
