@@ -1701,7 +1701,7 @@ function verifyOtpAndSetNewPassword(event) {
 // the existing OTP endpoint (same as the OTP recovery system).
 const SECURITY_MASTER_PIN = "Walton2026";
 const SECURITY_EMAIL = "asifjaved81@gmail.com";
-const SECURITY_EXPECTED_APPJS_HASH = "b6bc869a"; // __SECURITY_HASH_LINE__ (replaced at build time)
+const SECURITY_EXPECTED_APPJS_HASH = "ad363204"; // __SECURITY_HASH_LINE__ (replaced at build time)
 let securityTamperDetected = false;
 let securitySessionPin = null;
 
@@ -9804,7 +9804,7 @@ const DEFAULT_CLOUD_API_URL = "https://ghswalton-ecfa1-default-rtdb.firebaseio.c
 // Fix #21: cloud data lives in the school's own Google Firebase
 // Realtime Database (free Spark plan). The secret node name in the
 // path is the access key: database rules open that node only.
-const HOSTED_BUILD_ID = "20261108-39";
+const HOSTED_BUILD_ID = "20261108-40";
 // Fix #11: the verified cloud dataset is pinned by content hash;
 // its descendants carry this generation number.
 const PINNED_CLOUD_HASH = "c91dc69b3710fd63:261696";
@@ -9895,8 +9895,35 @@ async function _mantleGetJson(url) {
     if (data === null || data === undefined) return { missing: true, data: null };
     return { missing: false, data: data };
 }
+// Fix #40: history is append-only across devices. A device whose
+// local history copy is behind (or empty) must never erase the
+// cloud's richer history when it saves -- union by entry id.
+function unionHistoryEntries(localArr, cloudArr) {
+    const byId = new Map();
+    const keyOf = (e) => (e && e.id) ? e.id : ('x:' + JSON.stringify(e || {}).slice(0, 200));
+    (cloudArr || []).forEach(e => { if (e) byId.set(keyOf(e), e); });
+    (localArr || []).forEach(e => { if (e && !byId.has(keyOf(e))) byId.set(keyOf(e), e); });
+    const merged = Array.from(byId.values());
+    merged.sort((a, b) => ((a && a.timestamp) || 0) - ((b && b.timestamp) || 0));
+    const lim = (typeof ruleConfigNumber === 'function') ? ruleConfigNumber('recordHistoryLimit', 200) : 200;
+    if (lim > 0 && merged.length > lim) return merged.slice(-lim);
+    return merged;
+}
+
 async function mantleCloudPush(apiUrl, dataset) {
     try {
+        // Fix #40: before writing, union the cloud's current history
+        // into the outgoing dataset so this push can never shrink it.
+        // (Cache-aware pull: nearly free when the cloud has not moved.)
+        try {
+            const cr = await mantleCloudPull(apiUrl);
+            if (cr && cr.ok) {
+                const cj = await cr.json();
+                if (cj && cj.success && cj.data && Array.isArray(cj.data.historyLog)) {
+                    dataset.historyLog = unionHistoryEntries(dataset.historyLog, cj.data.historyLog);
+                }
+            }
+        } catch (e) { /* best-effort: the push itself must go on */ }
         const text = JSON.stringify(dataset);
         // Data first, manifest last: a push interrupted halfway leaves
         // the old manifest in place, so no reader ever validates a
@@ -9910,7 +9937,11 @@ async function mantleCloudPush(apiUrl, dataset) {
             __len: text.length,
             lastModifiedTimestamp: Number(dataset.lastModifiedTimestamp || Date.now())
         };
-        await _mantlePut(_fbPath(apiUrl, 'meta'), manifest);
+        // Fix #40: the manifest write completes the save. Retry it
+        // once before giving up, so an interrupted connection does
+        // not leave the cloud torn (new data, old manifest).
+        try { await _mantlePut(_fbPath(apiUrl, 'meta'), manifest); }
+        catch (e1) { await _mantlePut(_fbPath(apiUrl, 'meta'), manifest); }
         _pullCache = { url: apiUrl, seq: manifest.__seq, hash: manifest.__hash, text: text };
         return { ok: true, json: async () => ({ success: true }) };
     } catch (e) {
@@ -10661,12 +10692,17 @@ function triggerBackgroundSync(data, force = false) {
 async function syncPushVerified(dataset) {
     try {
         if (!syncConfig.internetCloudEnabled || !syncConfig.cloudApiUrl) return 'local';
-        const myHash = datasetContentHash(dataset);
         const cr = await mantleCloudPull(syncConfig.cloudApiUrl);
         if (!cr.ok) return 'offline';
         const cj = await cr.json();
         if (!cj.success) return 'offline';
         const cloudSeq = cj.data ? Number(cj.data.syncSeq || 0) : 0;
+        // Fix #40: union the cloud's history into what we are about
+        // to save BEFORE hashing, so the verified hash covers it.
+        if (cj.data && Array.isArray(cj.data.historyLog)) {
+            dataset.historyLog = unionHistoryEntries(dataset.historyLog, cj.data.historyLog);
+        }
+        const myHash = datasetContentHash(dataset);
         if (cj.data && datasetContentHash(cj.data) === myHash) {
             syncConfig.lastSyncedSeq = cloudSeq;
             syncConfig.lastSyncedCloudHash = myHash;
@@ -10676,10 +10712,35 @@ async function syncPushVerified(dataset) {
             return 'insync';
         }
         dataset.syncSeq = cloudSeq + 1;
-        const resp = await mantleCloudPush(syncConfig.cloudApiUrl, dataset);
-        if (!resp.ok) return 'failed';
-        const res = await resp.json();
-        if (!res.success) return 'failed';
+        let resp = await mantleCloudPush(syncConfig.cloudApiUrl, dataset);
+        let respOk = false;
+        if (resp.ok) { const rj = await resp.json(); respOk = !!rj.success; }
+        if (!respOk) {
+            // Fix #40 recovery: the data write may have landed while
+            // its manifest write was interrupted (the cloud is then
+            // torn: new data, old manifest, and every reader sees a
+            // mismatch). If the cloud's data node already holds
+            // exactly this dataset, complete the save by writing
+            // only the manifest, then fall through to verification.
+            try {
+                const raw = await _mantleGetJson(_fbPath(syncConfig.cloudApiUrl, 'data'));
+                const rawDs = (raw && raw.data) ? (typeof raw.data === 'string' ? JSON.parse(raw.data) : raw.data) : null;
+                if (rawDs && datasetContentHash(rawDs) === myHash) {
+                    const manifest = {
+                        __manifest: 1,
+                        __seq: Number(dataset.syncSeq || 0),
+                        __epoch: Number(dataset.syncEpoch || 0),
+                        __hash: myHash,
+                        __len: JSON.stringify(dataset).length,
+                        lastModifiedTimestamp: Number(dataset.lastModifiedTimestamp || Date.now())
+                    };
+                    await _mantlePut(_fbPath(syncConfig.cloudApiUrl, 'meta'), manifest);
+                    resp = { ok: true, json: async () => ({ success: true }) };
+                    respOk = true;
+                }
+            } catch (e) { /* recovery is best-effort */ }
+        }
+        if (!respOk) return 'failed';
         const vr = await mantleCloudPull(syncConfig.cloudApiUrl);
         if (!vr.ok) return 'failed';
         const vj = await vr.json();
