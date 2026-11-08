@@ -1701,7 +1701,7 @@ function verifyOtpAndSetNewPassword(event) {
 // the existing OTP endpoint (same as the OTP recovery system).
 const SECURITY_MASTER_PIN = "Walton2026";
 const SECURITY_EMAIL = "asifjaved81@gmail.com";
-const SECURITY_EXPECTED_APPJS_HASH = "2baf19a6"; // __SECURITY_HASH_LINE__ (replaced at build time)
+const SECURITY_EXPECTED_APPJS_HASH = "19ad7edc"; // __SECURITY_HASH_LINE__ (replaced at build time)
 let securityTamperDetected = false;
 let securitySessionPin = null;
 
@@ -10337,10 +10337,16 @@ async function checkAutoSyncOnStartup(silent = false) {
             return;
         }
         if (cloudMoved && localMoved) {
-            // Both sides moved: this active device's edits win. The
-            // checker has just read the cloud, so the push is forced
-            // (the CAS re-check inside would only divert back here).
-            triggerBackgroundSync(localDataset, true);
+            // Fix #38: both sides moved -> the CLOUD wins. The old
+            // rule (this device pushes its whole dataset) let a stale
+            // device that merely woke up overwrite the newest shared
+            // data -- on 2026-11-08 it wiped a verified teacher mobile
+            // update and 19 history entries from the cloud. A device
+            // that has fallen behind adopts the cloud copy instead
+            // (applyRemoteSyncData keeps a local safety snapshot of
+            // what it replaces). Deliberate saves do not pass through
+            // here: a Chief/Admin save pushes on its own path.
+            applyRemoteSyncData(cloudData, true, "Online Cloud", true);
             return;
         }
         // Only local moved: normal push (the CAS re-check inside
@@ -10411,6 +10417,12 @@ function applyRemoteSyncData(dataToApply, autoApply = false, sourceName = "Cloud
         } catch (e) { if (!_applyWarn) _applyWarn = "summary days: " + (e && e.message || e); } }
 
         if (data.timetableHistory) timetableHistory = data.timetableHistory;
+        // Fix #38: the applied cloud copy's history log comes with it.
+        // Without this, a device kept its own (older, shorter) log
+        // after adopting the cloud and its next save overwrote the
+        // cloud's fuller history -- the other half of the 2026-11-08
+        // overwrite incident (19 entries lost).
+        if (data.historyLog) historyLog = data.historyLog;
         if (data.staffStatement) staffStatementList = data.staffStatement;
         if (data.staffColumns) staffColumnsList = data.staffColumns;
         if (data.offlineFiles) offlineFilesList = data.offlineFiles;
