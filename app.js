@@ -1701,7 +1701,7 @@ function verifyOtpAndSetNewPassword(event) {
 // the existing OTP endpoint (same as the OTP recovery system).
 const SECURITY_MASTER_PIN = "Walton2026";
 const SECURITY_EMAIL = "asifjaved81@gmail.com";
-const SECURITY_EXPECTED_APPJS_HASH = "19ad7edc"; // __SECURITY_HASH_LINE__ (replaced at build time)
+const SECURITY_EXPECTED_APPJS_HASH = "b6bc869a"; // __SECURITY_HASH_LINE__ (replaced at build time)
 let securityTamperDetected = false;
 let securitySessionPin = null;
 
@@ -9804,7 +9804,7 @@ const DEFAULT_CLOUD_API_URL = "https://ghswalton-ecfa1-default-rtdb.firebaseio.c
 // Fix #21: cloud data lives in the school's own Google Firebase
 // Realtime Database (free Spark plan). The secret node name in the
 // path is the access key: database rules open that node only.
-const HOSTED_BUILD_ID = "20261108-36";
+const HOSTED_BUILD_ID = "20261108-39";
 // Fix #11: the verified cloud dataset is pinned by content hash;
 // its descendants carry this generation number.
 const PINNED_CLOUD_HASH = "c91dc69b3710fd63:261696";
@@ -10104,15 +10104,37 @@ async function checkForNewBuild() {
         const r = await fetch('/sync_version.txt', { cache: 'no-store' });
         if (!r.ok) return;
         const v = (await r.text()).trim();
-        if (!v || v === HOSTED_BUILD_ID) return;
+        if (!v || v === HOSTED_BUILD_ID) { try { sessionStorage.removeItem('buildReloadGuardV1'); } catch (e) {} return; }
         // A newer build is live on the server. Reload to pick it up, but
-        // never interrupt typing or an open dialog -- wait for a quiet
-        // moment and let the next cycle reload instead.
+        // never interrupt typing, an open dialog or a login/lock screen --
+        // wait for a quiet moment and let the next cycle reload instead.
         const ae = document.activeElement;
         const typing = !!(ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT' || ae.isContentEditable));
         const modalOpen = !!document.querySelector('[id$="Modal"]:not(.hidden), [id$="modal"]:not(.hidden)');
-        if (typing || modalOpen) { _buildReloadPending = true; return; }
-        location.reload();
+        const lockEl = document.getElementById('securityLockScreen');
+        const lockOpen = !!(lockEl && !lockEl.classList.contains('hidden'));
+        if (typing || modalOpen || lockOpen) { _buildReloadPending = true; return; }
+        // Fix #39 loop guard: if picking up this build already caused 2
+        // reloads in the last 10 minutes and the running build STILL does
+        // not match (e.g. a stale cached copy keeps being served), stop
+        // reloading -- the page stays usable and a later visit picks the
+        // build up. (Builds #37/#38 left HOSTED_BUILD_ID behind
+        // sync_version.txt and trapped devices in an endless reload loop,
+        // including on the PIN lock screen, whose id ends in "Screen",
+        // not "Modal", so the old dialog check never protected it.)
+        try {
+            const now = Date.now();
+            let g = null;
+            try { g = JSON.parse(sessionStorage.getItem('buildReloadGuardV1') || 'null'); } catch (e) {}
+            if (!g || g.v !== v || (now - g.firstAt) > 10 * 60 * 1000) g = { v: v, count: 0, firstAt: now };
+            if (g.count >= 2) { _buildReloadPending = true; return; }
+            g.count++;
+            sessionStorage.setItem('buildReloadGuardV1', JSON.stringify(g));
+        } catch (e) { /* sessionStorage unavailable -- reload anyway */ }
+        // Cache-busting URL so the reload really fetches the new files
+        // instead of re-serving the stale cached copy that caused the
+        // mismatch in the first place.
+        location.replace(location.pathname + '?v=' + encodeURIComponent(v));
     } catch (e) { /* offline or file missing -- try again next cycle */ }
 }
 
