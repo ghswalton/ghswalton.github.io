@@ -25,6 +25,17 @@ const HISTORY_TYPE_LABELS = {
     teacherSlips: 'Teacher-Wise Slips History'
 };
 function historyClone(v) { try { return JSON.parse(JSON.stringify(v)); } catch (e) { return null; } }
+// Fix #41: history entries are a text log only. The stored data
+// copies (snapshots) are deleted for good (owner's order,
+// 2026-11-09): every entry is kept, its snapshot is dropped.
+function slimHistoryEntries(arr) {
+    return (Array.isArray(arr) ? arr : []).map(function (e) {
+        if (!e || typeof e !== 'object' || !e.snapshot) return e;
+        const c = Object.assign({}, e);
+        c.snapshot = null;
+        return c;
+    });
+}
 function logHistory(type, action, description, snapshot) {
     try {
         const now = new Date();
@@ -36,7 +47,7 @@ function logHistory(type, action, description, snapshot) {
             date: now.toLocaleDateString('en-GB'),
             displayDate: now.toLocaleString('en-GB'),
             timestamp: now.getTime(),
-            snapshot: snapshot || null
+            snapshot: null // Fix #41: text record only -- data copies are deleted for good (owner's order, 2026-11-09).
         });
         const _histLimit = (typeof ruleConfigNumber === 'function') ? ruleConfigNumber('recordHistoryLimit', 200) : 200;
         if (historyLog.length > _histLimit) historyLog = historyLog.slice(-_histLimit);
@@ -1701,7 +1712,7 @@ function verifyOtpAndSetNewPassword(event) {
 // the existing OTP endpoint (same as the OTP recovery system).
 const SECURITY_MASTER_PIN = "Walton2026";
 const SECURITY_EMAIL = "asifjaved81@gmail.com";
-const SECURITY_EXPECTED_APPJS_HASH = "ad363204"; // __SECURITY_HASH_LINE__ (replaced at build time)
+const SECURITY_EXPECTED_APPJS_HASH = "7236f195"; // __SECURITY_HASH_LINE__ (replaced at build time)
 let securityTamperDetected = false;
 let securitySessionPin = null;
 
@@ -2186,6 +2197,7 @@ function saveData() {
             localStorage.setItem('ghs_walton_schedule_v3', JSON.stringify(scheduleResult));
         }
         localStorage.setItem('ghs_walton_history_v3', JSON.stringify(timetableHistory));
+        historyLog = slimHistoryEntries(historyLog);
         localStorage.setItem('historyLog', JSON.stringify(historyLog));
         localStorage.setItem('ghs_walton_staff_statement_v1', JSON.stringify(staffStatementList));
         localStorage.setItem('ghs_walton_staff_cols_v1', JSON.stringify(staffColumnsList));
@@ -5782,12 +5794,14 @@ function saveTeacherAction(e) {
     }
 
     saveData();
-    // Fix #37: canonical mobile write -- staff login copy follows the
-    // record, and this save pushes with force (the active Chief/Admin
-    // editor's record wins) instead of the debounced soft push that a
-    // stale baseline could divert away from the cloud.
+    // Fix #37: canonical mobile write -- staff login copy follows
+    // the record. Fix #41: the save then pushes converge-first (see
+    // pushTeacherChangeToCloud): a stale device adopts the newest
+    // cloud copy and re-applies only this record before pushing, so
+    // its save can never resurrect older teacher data over a newer
+    // edit (the mobile-number reverts of 2026-11-08/09).
     try { resyncStaffAccountMobile(id, mobileNumber); } catch (e) {}
-    try { triggerBackgroundSync(getFullSystemDataset(), true); } catch (e) {}
+    try { pushTeacherChangeToCloud(id, false, teacherObj); } catch (e) {}
     // TASK 7: date-wise history — teacher added / edited.
     logHistory('timetable', _isNewTeacher ? 'add' : 'edit', 'Teacher "' + name + '" (' + designation + ')' + (_isNewTeacher ? ' added.' : ' updated.'), { teachers: historyClone(teachersList), classes: historyClone(classesList), schedule: historyClone(scheduleResult) });
     closeTeacherModal();
@@ -5804,17 +5818,10 @@ function saveTeacherAction(e) {
     }
 }
 
-function deleteTeacher(id) {
-    try {
-        const t = teachersList.find(x => x.id === id);
-        const teacherName = t ? t.name : 'Teacher';
-
-        try {
-            archiveCurrentSchedule("Deleted Teacher: " + teacherName);
-        } catch (e) {
-            console.warn("Archive note:", e);
-        }
-
+// Fix #41: the teacher-removal mutation on its own, so the
+// converge-first push can re-apply a deletion on top of a
+// freshly adopted cloud copy (see pushTeacherChangeToCloud).
+function applyTeacherRemoval(id) {
         teachersList = teachersList.filter(x => x.id !== id);
 
         // Clean up references in classesList
@@ -5853,7 +5860,24 @@ function deleteTeacher(id) {
         }
 
         try { rebuildSchedulesFromClassSchedule(); } catch (e) { console.warn(e); }
+}
+
+
+function deleteTeacher(id) {
+    try {
+        const t = teachersList.find(x => x.id === id);
+        const teacherName = t ? t.name : 'Teacher';
+
+        try {
+            archiveCurrentSchedule("Deleted Teacher: " + teacherName);
+        } catch (e) {
+            console.warn("Archive note:", e);
+        }
+
+        applyTeacherRemoval(id);
         saveData();
+        // Fix #41: converge-first push for the deletion.
+        try { pushTeacherChangeToCloud(id, true, null); } catch (e) {}
         // TASK 7: date-wise history — teacher deleted.
         logHistory('timetable', 'delete', 'Teacher "' + teacherName + '" deleted.', { teachers: historyClone(teachersList), classes: historyClone(classesList), schedule: historyClone(scheduleResult) });
         try { renderTeachersList(); } catch (e) { console.warn(e); }
@@ -9804,7 +9828,7 @@ const DEFAULT_CLOUD_API_URL = "https://ghswalton-ecfa1-default-rtdb.firebaseio.c
 // Fix #21: cloud data lives in the school's own Google Firebase
 // Realtime Database (free Spark plan). The secret node name in the
 // path is the access key: database rules open that node only.
-const HOSTED_BUILD_ID = "20261108-40";
+const HOSTED_BUILD_ID = "20261109-41";
 // Fix #11: the verified cloud dataset is pinned by content hash;
 // its descendants carry this generation number.
 const PINNED_CLOUD_HASH = "c91dc69b3710fd63:261696";
@@ -9912,15 +9936,23 @@ function unionHistoryEntries(localArr, cloudArr) {
 
 async function mantleCloudPush(apiUrl, dataset) {
     try {
-        // Fix #40: before writing, union the cloud's current history
-        // into the outgoing dataset so this push can never shrink it.
-        // (Cache-aware pull: nearly free when the cloud has not moved.)
+        // Fix #41: never write what the cloud already holds. If the
+        // cloud's current content is identical to this dataset, the
+        // save is already done -- skip the write entirely. This is a
+        // hard guarantee at the single write choke point: no caller,
+        // baseline state or listener re-entry can make a device
+        // re-push identical data (the echo loop that kept inflating
+        // the cloud sequence and racing real saves). The pull is
+        // cache-aware: nearly free when the cloud has not moved.
+        // The Fix #40 history union is also retired here: history
+        // data copies are deleted for good (owner's order), so a
+        // push must never resurrect them from the cloud copy.
         try {
             const cr = await mantleCloudPull(apiUrl);
             if (cr && cr.ok) {
                 const cj = await cr.json();
-                if (cj && cj.success && cj.data && Array.isArray(cj.data.historyLog)) {
-                    dataset.historyLog = unionHistoryEntries(dataset.historyLog, cj.data.historyLog);
+                if (cj && cj.success && cj.data && datasetContentHash(cj.data) === datasetContentHash(dataset)) {
+                    return { ok: true, json: async () => ({ success: true, skipped: true }) };
                 }
             }
         } catch (e) { /* best-effort: the push itself must go on */ }
@@ -10039,7 +10071,7 @@ function getFullSystemDataset() {
         scheduleResult: scheduleResult,
         timetableHistory: timetableHistory,
         staffStatement: staffStatementList,
-        historyLog: historyLog,
+        historyLog: slimHistoryEntries(historyLog),
         staffColumns: staffColumnsList,
         offlineFiles: offlineFilesList,
         fixedPeriods: fixedPeriodsList,
@@ -10418,7 +10450,7 @@ function applyRemoteSyncData(dataToApply, autoApply = false, sourceName = "Cloud
     // Fix #30: a cloud update never lands in the middle of the
     // user's own editing (typing / an open dialog). It is held and
     // applied the moment they finish — see tryApplyDeferredSync.
-    if (fromCloud && isUserMidEdit()) {
+    if (fromCloud && isUserMidEdit() && !window._forceSyncApply) {
         _deferredRemoteSyncData = data;
         updateSyncBadge("idle", "Update received — will apply when you finish editing");
         return;
@@ -10475,7 +10507,7 @@ function applyRemoteSyncData(dataToApply, autoApply = false, sourceName = "Cloud
         // after adopting the cloud and its next save overwrote the
         // cloud's fuller history -- the other half of the 2026-11-08
         // overwrite incident (19 entries lost).
-        if (data.historyLog) historyLog = data.historyLog;
+        if (data.historyLog) historyLog = slimHistoryEntries(data.historyLog);
         if (data.staffStatement) staffStatementList = data.staffStatement;
         if (data.staffColumns) staffColumnsList = data.staffColumns;
         if (data.offlineFiles) offlineFilesList = data.offlineFiles;
@@ -10568,11 +10600,13 @@ function triggerBackgroundSync(data, force = false) {
             if (typeof window !== 'undefined' && window._cloudCooldownUntil && Date.now() < window._cloudCooldownUntil) { updateSyncBadge("idle", "Sync delayed - retrying"); return; }
             let _casSeq = null;
             let _casHasData = false;
+            let _casCloudHash = "";
             try {
                 const _cr = await mantleCloudPull(syncConfig.cloudApiUrl);
                 if (_cr.ok) {
                     const _cj = await _cr.json();
                     if (_cj.success) { _casSeq = _cj.data ? Number(_cj.data.syncSeq || 0) : 0; _casHasData = !!_cj.data; }
+                    if (_cj.success && _cj.data) _casCloudHash = datasetContentHash(_cj.data);
                     if (_cj.success && _cj.data && Number(_cj.data.syncGen || 0) >= PINNED_CLOUD_GEN && heldSyncGen < PINNED_CLOUD_GEN) {
                         // Fix #37: a FORCED save (the active Chief/Admin
                         // editor's deliberate write) adopts the cloud
@@ -10636,6 +10670,19 @@ function triggerBackgroundSync(data, force = false) {
                 updateSyncBadge("synced", "Synced with cloud");
                 return;
             }
+            // Fix #41: the same skip, proven against the copy just
+            // read from the cloud (not this device's baseline record)
+            // and applied to forced saves too: if the cloud already
+            // holds exactly this content, adopt its sequence as the
+            // baseline and write nothing.
+            if (_casCloudHash && _casCloudHash === datasetContentHash(dataset)) {
+                syncConfig.lastSyncedSeq = (_casSeq === null ? _baseSeqNow : _casSeq);
+                syncConfig.lastSyncedCloudHash = _casCloudHash;
+                syncConfig.lastSyncedLocalHash = _casCloudHash;
+                saveSyncConfig();
+                updateSyncBadge("synced", "Synced with cloud");
+                return;
+            }
         }
 
         let cloudSuccess = false;
@@ -10685,6 +10732,37 @@ function triggerBackgroundSync(data, force = false) {
     }, 800);
 }
 
+// Fix #41: converge-first push for a single teacher add/edit/delete.
+// If this device has fallen behind the cloud (another device saved
+// newer data since this device's baseline), it first adopts the
+// newest cloud copy, re-applies ONLY this one teacher change on top
+// of it, and only then pushes. A stale device can therefore never
+// resurrect older teacher data over a newer edit. Any failure along
+// the way falls back to the normal forced push.
+async function pushTeacherChangeToCloud(teacherId, isDelete, recordObj) {
+    try {
+        if (syncConfig.internetCloudEnabled && syncConfig.cloudApiUrl && typeof mantleCloudPull === 'function') {
+            const cr = await mantleCloudPull(syncConfig.cloudApiUrl);
+            if (cr && cr.ok) {
+                const cj = await cr.json();
+                if (cj && cj.success && cj.data && datasetContentHash(cj.data) !== (syncConfig.lastSyncedCloudHash || "")) {
+                    window._forceSyncApply = true;
+                    try { applyRemoteSyncData(cj.data, true, "Online Cloud", true); } finally { window._forceSyncApply = false; }
+                    if (isDelete) {
+                        applyTeacherRemoval(teacherId);
+                    } else if (recordObj) {
+                        const ix = teachersList.findIndex(t => t.id === teacherId);
+                        if (ix >= 0) teachersList[ix] = recordObj; else teachersList.push(recordObj);
+                        try { rebuildSchedulesFromClassSchedule(); } catch (e) {}
+                    }
+                    saveData();
+                }
+            }
+        }
+    } catch (e) { /* fall through to the normal forced push */ }
+    try { triggerBackgroundSync(getFullSystemDataset(), true); } catch (e) {}
+}
+
 // Fix #37: a cloud save whose result is CHECKED, not assumed. Reads
 // the cloud first (CAS baseline), pushes, then READS BACK and compares
 // the content hash -- only a verified match may be reported as saved.
@@ -10697,11 +10775,8 @@ async function syncPushVerified(dataset) {
         const cj = await cr.json();
         if (!cj.success) return 'offline';
         const cloudSeq = cj.data ? Number(cj.data.syncSeq || 0) : 0;
-        // Fix #40: union the cloud's history into what we are about
-        // to save BEFORE hashing, so the verified hash covers it.
-        if (cj.data && Array.isArray(cj.data.historyLog)) {
-            dataset.historyLog = unionHistoryEntries(dataset.historyLog, cj.data.historyLog);
-        }
+        // Fix #41: no history union -- history data copies are
+        // deleted for good (owner's order, 2026-11-09).
         const myHash = datasetContentHash(dataset);
         if (cj.data && datasetContentHash(cj.data) === myHash) {
             syncConfig.lastSyncedSeq = cloudSeq;
