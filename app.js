@@ -1712,7 +1712,7 @@ function verifyOtpAndSetNewPassword(event) {
 // the existing OTP endpoint (same as the OTP recovery system).
 const SECURITY_MASTER_PIN = "Walton2026";
 const SECURITY_EMAIL = "asifjaved81@gmail.com";
-const SECURITY_EXPECTED_APPJS_HASH = "7236f195"; // __SECURITY_HASH_LINE__ (replaced at build time)
+const SECURITY_EXPECTED_APPJS_HASH = "c37921dd"; // __SECURITY_HASH_LINE__ (replaced at build time)
 let securityTamperDetected = false;
 let securitySessionPin = null;
 
@@ -9828,11 +9828,11 @@ const DEFAULT_CLOUD_API_URL = "https://ghswalton-ecfa1-default-rtdb.firebaseio.c
 // Fix #21: cloud data lives in the school's own Google Firebase
 // Realtime Database (free Spark plan). The secret node name in the
 // path is the access key: database rules open that node only.
-const HOSTED_BUILD_ID = "20261109-41";
+const HOSTED_BUILD_ID = "20261109-42";
 // Fix #11: the verified cloud dataset is pinned by content hash;
 // its descendants carry this generation number.
-const PINNED_CLOUD_HASH = "c91dc69b3710fd63:261696";
-const PINNED_CLOUD_GEN = 7;
+const PINNED_CLOUD_HASH = "3646e8372a518517:639493";
+const PINNED_CLOUD_GEN = 8; // Fix #42: lineage moved to gen 8 on 2026-11-09 -- a gen-7 (seed-era) copy is foreign and gets repaired, never adopted.
 let heldSyncGen = 0;
 
 let syncConfig = {
@@ -10353,7 +10353,17 @@ async function checkAutoSyncOnStartup(silent = false) {
         // Fix #11: the pinned, verified dataset and its generation.
         if (cloudHash === PINNED_CLOUD_HASH) {
             if (cloudHash !== localHash) {
-                applyRemoteSyncData(cloudData, true, "Online Cloud", true);
+                // Fix #42: if this device AGREED with the pinned copy
+                // (its baseline IS the pin) and then moved, the move
+                // is a genuine new edit made on top of the pinned
+                // state -- push it, never discard it under the pin.
+                // Any other local difference is a divergent copy and
+                // the pin replaces it, as before.
+                if ((syncConfig.lastSyncedCloudHash || "") === cloudHash) {
+                    triggerBackgroundSync(localDataset);
+                } else {
+                    applyRemoteSyncData(cloudData, true, "Online Cloud", true);
+                }
             } else {
                 syncConfig.lastSyncedSeq = Number(cloudData.syncSeq || 0);
                 syncConfig.lastSyncedCloudHash = cloudHash;
@@ -10740,11 +10750,34 @@ function triggerBackgroundSync(data, force = false) {
 // resurrect older teacher data over a newer edit. Any failure along
 // the way falls back to the normal forced push.
 async function pushTeacherChangeToCloud(teacherId, isDelete, recordObj) {
+    // Fix #42: this push may only proceed on a VERIFIED view of the
+    // cloud. If a deferred cloud copy is already waiting (the boot
+    // apply that a fast login can outrun), adopt it first; if the
+    // cloud read itself fails, do not push at all -- the edit stays
+    // saved on this device and normal sync carries it later. A blind
+    // forced push from a device holding an old copy is exactly what
+    // rolled the cloud back on 2026-11-09.
+    let _cloudChecked = false;
     try {
+        if (window._deferredRemoteSyncData) {
+            const _pending = window._deferredRemoteSyncData;
+            window._forceSyncApply = true;
+            try { applyRemoteSyncData(_pending, true, "Online Cloud", true); } finally { window._forceSyncApply = false; }
+            _cloudChecked = true;
+            if (isDelete) {
+                applyTeacherRemoval(teacherId);
+            } else if (recordObj) {
+                const _ix = teachersList.findIndex(t => t.id === teacherId);
+                if (_ix >= 0) teachersList[_ix] = recordObj; else teachersList.push(recordObj);
+                try { rebuildSchedulesFromClassSchedule(); } catch (e) {}
+            }
+            saveData();
+        }
         if (syncConfig.internetCloudEnabled && syncConfig.cloudApiUrl && typeof mantleCloudPull === 'function') {
             const cr = await mantleCloudPull(syncConfig.cloudApiUrl);
             if (cr && cr.ok) {
                 const cj = await cr.json();
+                if (cj && cj.success && cj.data) _cloudChecked = true;
                 if (cj && cj.success && cj.data && datasetContentHash(cj.data) !== (syncConfig.lastSyncedCloudHash || "")) {
                     window._forceSyncApply = true;
                     try { applyRemoteSyncData(cj.data, true, "Online Cloud", true); } finally { window._forceSyncApply = false; }
@@ -10759,7 +10792,8 @@ async function pushTeacherChangeToCloud(teacherId, isDelete, recordObj) {
                 }
             }
         }
-    } catch (e) { /* fall through to the normal forced push */ }
+    } catch (e) { /* handled by the _cloudChecked gate below */ }
+    if (!_cloudChecked) return; // no verified view of the cloud: never push blind
     try { triggerBackgroundSync(getFullSystemDataset(), true); } catch (e) {}
 }
 
@@ -10778,6 +10812,19 @@ async function syncPushVerified(dataset) {
         // Fix #41: no history union -- history data copies are
         // deleted for good (owner's order, 2026-11-09).
         const myHash = datasetContentHash(dataset);
+        // Fix #42: a device that is BEHIND the cloud must never win
+        // Save Data. The 2026-11-09 rollback came from a device
+        // holding an old copy whose whole-dataset save overwrote
+        // newer cloud data (signature, numbers, timings). If the
+        // cloud has moved past this device's baseline -- or the
+        // device has no baseline at all -- load the cloud copy
+        // instead and report 'stale': nothing is overwritten, and
+        // the user can review the fresh data and save again.
+        if (cj.data && datasetContentHash(cj.data) !== myHash
+            && (typeof syncConfig.lastSyncedSeq !== 'number' || cloudSeq > syncConfig.lastSyncedSeq)) {
+            try { applyRemoteSyncData(cj.data, true, "Online Cloud", true); } catch (e) {}
+            return 'stale';
+        }
         if (cj.data && datasetContentHash(cj.data) === myHash) {
             syncConfig.lastSyncedSeq = cloudSeq;
             syncConfig.lastSyncedCloudHash = myHash;
@@ -10876,6 +10923,8 @@ async function permanentSaveAndSyncAllAction() {
 
     if (_saveStatus === 'pushed' || _saveStatus === 'insync') {
         showToast("✅ All timetables and changes have been permanently saved to the cloud and this computer!");
+    } else if (_saveStatus === 'stale') {
+        showToast("⚠️ This device was behind the cloud — the latest cloud data has been loaded and NOTHING was overwritten. Please check your data, then press Save Data again.");
     } else if (_saveStatus === 'local') {
         showToast("✅ Changes saved on this computer.");
     } else {
@@ -10945,6 +10994,25 @@ function saveCloudSyncSettings() {
 }
 
 async function manualPushToCloud() {
+    // Fix #42: the same staleness guard as Save Data -- a device
+    // behind the cloud (or with no baseline) loads the cloud copy
+    // instead of overwriting newer data with its old copy.
+    try {
+        if (syncConfig.internetCloudEnabled && syncConfig.cloudApiUrl) {
+            const _cr = await mantleCloudPull(syncConfig.cloudApiUrl);
+            if (_cr && _cr.ok) {
+                const _cj = await _cr.json();
+                if (_cj && _cj.success && _cj.data) {
+                    const _ahead = (typeof syncConfig.lastSyncedSeq !== 'number') || (Number(_cj.data.syncSeq || 0) > syncConfig.lastSyncedSeq);
+                    if (_ahead && datasetContentHash(_cj.data) !== datasetContentHash(getFullSystemDataset())) {
+                        try { applyRemoteSyncData(_cj.data, true, "Online Cloud", true); } catch (e) {}
+                        showToast("⚠️ This device was behind the cloud — the latest cloud data has been loaded and NOTHING was overwritten. Please check your data, then send again if needed.");
+                        return;
+                    }
+                }
+            }
+        }
+    } catch (e) { /* guard is best-effort; the push below is unchanged */ }
     updateSyncBadge("syncing", "Sending to cloud...");
     const dataset = getFullSystemDataset();
     dataset.lastModifiedTimestamp = Date.now();
