@@ -50,18 +50,28 @@
             box-shadow: 0 12px 22px rgba(0,0,0,0.5), 0 4px 6px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.28), inset 0 -10px 18px rgba(0,0,0,0.35);
         }
         .top-info-row {
-            width: 210px; height: 36px; box-sizing: border-box;
+            width: var(--topctl-w); height: 36px; box-sizing: border-box;
             display: flex; align-items: center; justify-content: center; gap: 6px;
             white-space: nowrap; overflow: hidden;
             background: rgba(15,23,42,0.55); border: 1px solid rgba(147,197,253,0.35); border-radius: 0.75rem;
             box-shadow: inset 0 1px 0 rgba(255,255,255,0.14), inset 0 -6px 10px rgba(0,0,0,0.3);
         }
         #headerSyncBadge, #roleBadgeBtn, #logoutBtn, #fingerprintActivateBtn, #saveDataTopBtn {
-            width: 210px; height: 36px; max-height: 36px; box-sizing: border-box;
+            width: var(--topctl-w); height: 36px; max-height: 36px; box-sizing: border-box;
             justify-content: center; align-items: center; white-space: nowrap; overflow: hidden;
             border-radius: 0.75rem; letter-spacing: 0.01em;
             box-shadow: 0 1px 2px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.08);
             transition: filter 0.15s ease, border-color 0.15s ease;
+        }
+        /* Fix #36: the header stays excellent at any zoom and on mobile —
+           the two boxes never split apart, the title never wraps */
+        :root { --topctl-w: min(210px, calc(50vw - 39px)); }
+        #headerMainRow { flex-wrap: wrap; }
+        #headerControls { flex-wrap: nowrap; align-items: flex-start; }
+        #topButtonsBox, #topInfoBox { flex-shrink: 0; }
+        #headerSchoolName { white-space: nowrap; font-size: clamp(11px, 4.2vw, 24px); }
+        @media (max-width: 480px) {
+            #headerSyncBadge, #roleBadgeBtn, #logoutBtn, #fingerprintActivateBtn, #saveDataTopBtn { font-size: 11px; }
         }
         #headerSyncBadge:hover, #roleBadgeBtn:hover, #logoutBtn:hover, #fingerprintActivateBtn:hover, #saveDataTopBtn:hover {
             filter: brightness(1.2); border-color: rgba(125,211,252,0.7);
@@ -82,7 +92,7 @@
     <!-- TOP HEADER -->
     <header class="bg-gradient-to-r from-blue-900 via-indigo-900 to-blue-950 text-white shadow-lg border-b-4 border-amber-500 no-print">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3">
-            <div class="flex flex-col md:flex-row items-center justify-between gap-3">
+            <div id="headerMainRow" class="flex flex-col md:flex-row items-center justify-between gap-3">
                 <!-- School Crest and Name -->
                 <div class="flex items-center gap-3 text-center md:text-left">
                     <img id="headerMonogramImg" alt="School Monogram" style="background: transparent; display: none; object-fit: contain;" />
@@ -100,7 +110,7 @@
                 </div>
 
                 <!-- Live Date, Academic Session, EMIS & Cloud Sync Controls -->
-                <div class="flex flex-wrap items-center justify-center md:justify-end gap-2 text-right">
+                <div id="headerControls" class="flex flex-wrap items-center justify-center md:justify-end gap-2 text-right">
                     <!-- Live Cloud & Multi-PC Sync Status Badge -->
                     <!-- Fix #34: ONE rectangle box holding all top buttons, vertical -->
                     <div id="topButtonsBox" class="flex flex-col items-stretch gap-1.5">
