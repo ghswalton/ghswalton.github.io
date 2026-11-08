@@ -575,7 +575,20 @@ function formatCnicInput(input) {
 // Automatic Mobile Masking Helper (0300-4525789: dash after first 4 digits)
 function formatMobileInput(input) {
     if (!input) return;
-    let val = input.value.replace(/\D/g, ''); // numbers only
+    // Fix #37: international numbers (+92 / 92...) keep their country
+    // code and full length as a string -- never truncated into a wrong
+    // local number. Local 03XX numbers keep the existing format.
+    const _hadPlus = input.value.trim().startsWith('+');
+    let _digits = input.value.replace(/\D/g, '');
+    if (_hadPlus || (_digits.startsWith('92') && _digits.length > 11)) {
+        if (_digits.length > 12) _digits = _digits.substring(0, 12);
+        let _f = '+92';
+        if (_digits.length > 2) _f += '-' + _digits.substring(2, 5);
+        if (_digits.length > 5) _f += '-' + _digits.substring(5);
+        input.value = _digits.length > 2 ? _f : (_hadPlus ? '+' + _digits : _digits);
+        return;
+    }
+    let val = _digits;
     if (val.length > 11) val = val.substring(0, 11);
 
     let formatted = '';
@@ -1688,7 +1701,7 @@ function verifyOtpAndSetNewPassword(event) {
 // the existing OTP endpoint (same as the OTP recovery system).
 const SECURITY_MASTER_PIN = "Walton2026";
 const SECURITY_EMAIL = "asifjaved81@gmail.com";
-const SECURITY_EXPECTED_APPJS_HASH = "78e0c7df"; // __SECURITY_HASH_LINE__ (replaced at build time)
+const SECURITY_EXPECTED_APPJS_HASH = "2baf19a6"; // __SECURITY_HASH_LINE__ (replaced at build time)
 let securityTamperDetected = false;
 let securitySessionPin = null;
 
@@ -5709,6 +5722,25 @@ function freeTeacherSubjectPeriods(teacherId, removedNames) {
     return freed;
 }
 
+// Fix #37: the teacher record in Teachers & Workload is the ONE
+// canonical source for a teacher's mobile number. Staff accounts hold
+// a login copy of that number; when the Chief/Admin edits the record,
+// the copy is brought in step so staff keep signing in with -- and
+// seeing -- the same number the slips show.
+function resyncStaffAccountMobile(teacherId, mobileNumber) {
+    const mob = String(mobileNumber || '').trim();
+    if (!teacherId || !mob) return;
+    if (typeof staffAccountsList === 'undefined' || !Array.isArray(staffAccountsList)) return;
+    let changed = false;
+    staffAccountsList.forEach(a => {
+        if (a && a.teacherId === teacherId && a.mobile !== mob) { a.mobile = mob; changed = true; }
+    });
+    if (typeof currentStaffAccount !== 'undefined' && currentStaffAccount && currentStaffAccount.teacherId === teacherId && currentStaffAccount.mobile !== mob) {
+        currentStaffAccount.mobile = mob;
+    }
+    if (changed && typeof pushStaffAccounts === 'function') pushStaffAccounts();
+}
+
 function saveTeacherAction(e) {
     e.preventDefault();
     archiveCurrentSchedule("Teacher Profile Modification");
@@ -5750,6 +5782,12 @@ function saveTeacherAction(e) {
     }
 
     saveData();
+    // Fix #37: canonical mobile write -- staff login copy follows the
+    // record, and this save pushes with force (the active Chief/Admin
+    // editor's record wins) instead of the debounced soft push that a
+    // stale baseline could divert away from the cloud.
+    try { resyncStaffAccountMobile(id, mobileNumber); } catch (e) {}
+    try { triggerBackgroundSync(getFullSystemDataset(), true); } catch (e) {}
     // TASK 7: date-wise history — teacher added / edited.
     logHistory('timetable', _isNewTeacher ? 'add' : 'edit', 'Teacher "' + name + '" (' + designation + ')' + (_isNewTeacher ? ' added.' : ' updated.'), { teachers: historyClone(teachersList), classes: historyClone(classesList), schedule: historyClone(scheduleResult) });
     closeTeacherModal();
@@ -10282,6 +10320,10 @@ async function checkAutoSyncOnStartup(silent = false) {
         if (cloudHash === localHash) {
             syncConfig.lastSyncedSeq = Number(cloudData.syncSeq || 0);
             syncConfig.lastSyncedCloudHash = cloudHash;
+            // Fix #37: persist the generation too -- an in-sync device
+            // that loses it deadlocks its own pushes at the gen gate.
+            syncConfig.lastSyncedGen = cloudGen;
+            heldSyncGen = cloudGen;
             saveSyncConfig();
             updateSyncBadge("synced", "Synced with cloud");
             return;
@@ -10467,9 +10509,23 @@ function triggerBackgroundSync(data, force = false) {
                     const _cj = await _cr.json();
                     if (_cj.success) { _casSeq = _cj.data ? Number(_cj.data.syncSeq || 0) : 0; _casHasData = !!_cj.data; }
                     if (_cj.success && _cj.data && Number(_cj.data.syncGen || 0) >= PINNED_CLOUD_GEN && heldSyncGen < PINNED_CLOUD_GEN) {
-                        updateSyncBadge("syncing", "Updating from cloud...");
-                        checkAutoSyncOnStartup(true);
-                        return;
+                        // Fix #37: a FORCED save (the active Chief/Admin
+                        // editor's deliberate write) adopts the cloud
+                        // generation it just verified and proceeds.
+                        // Diverting it here deadlocked every push on any
+                        // device whose local generation counter was
+                        // behind, silently stranding edits (e.g. teacher
+                        // mobile numbers) while the UI claimed success.
+                        // A soft background save still diverts + adopts.
+                        if (force) {
+                            heldSyncGen = Number(_cj.data.syncGen || 0);
+                            syncConfig.lastSyncedGen = heldSyncGen;
+                            saveSyncConfig();
+                        } else {
+                            updateSyncBadge("syncing", "Updating from cloud...");
+                            checkAutoSyncOnStartup(true);
+                            return;
+                        }
                     }
                     if (_cj.success && _cj.data && !force && typeof syncConfig.lastSyncedSeq === 'number'
                         && Number(_cj.data.syncSeq || 0) !== syncConfig.lastSyncedSeq
@@ -10564,6 +10620,50 @@ function triggerBackgroundSync(data, force = false) {
     }, 800);
 }
 
+// Fix #37: a cloud save whose result is CHECKED, not assumed. Reads
+// the cloud first (CAS baseline), pushes, then READS BACK and compares
+// the content hash -- only a verified match may be reported as saved.
+// Returns 'pushed' | 'insync' | 'offline' | 'failed' | 'local'.
+async function syncPushVerified(dataset) {
+    try {
+        if (!syncConfig.internetCloudEnabled || !syncConfig.cloudApiUrl) return 'local';
+        const myHash = datasetContentHash(dataset);
+        const cr = await mantleCloudPull(syncConfig.cloudApiUrl);
+        if (!cr.ok) return 'offline';
+        const cj = await cr.json();
+        if (!cj.success) return 'offline';
+        const cloudSeq = cj.data ? Number(cj.data.syncSeq || 0) : 0;
+        if (cj.data && datasetContentHash(cj.data) === myHash) {
+            syncConfig.lastSyncedSeq = cloudSeq;
+            syncConfig.lastSyncedCloudHash = myHash;
+            syncConfig.lastSyncedLocalHash = myHash;
+            saveSyncConfig();
+            updateSyncBadge("synced", "Synced with cloud");
+            return 'insync';
+        }
+        dataset.syncSeq = cloudSeq + 1;
+        const resp = await mantleCloudPush(syncConfig.cloudApiUrl, dataset);
+        if (!resp.ok) return 'failed';
+        const res = await resp.json();
+        if (!res.success) return 'failed';
+        const vr = await mantleCloudPull(syncConfig.cloudApiUrl);
+        if (!vr.ok) return 'failed';
+        const vj = await vr.json();
+        if (!vj.success || !vj.data || datasetContentHash(vj.data) !== myHash) return 'failed';
+        syncConfig.lastSyncedSeq = dataset.syncSeq;
+        syncConfig.lastSyncedCloudHash = myHash;
+        syncConfig.lastSyncedLocalHash = myHash;
+        syncConfig.lastSyncTimestamp = Date.now();
+        syncConfig.lastSyncFormatted = new Date().toLocaleTimeString('ur-PK', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        saveSyncConfig();
+        try { localStorage.setItem('timetableLastModified', String(dataset.lastModifiedTimestamp || Date.now())); } catch (e) {}
+        updateSyncBadge("synced", `Saved: ${syncConfig.lastSyncFormatted}`);
+        return 'pushed';
+    } catch (e) {
+        return 'failed';
+    }
+}
+
 // 1-Click Universal Permanent Save & Cloud Sync Action
 async function permanentSaveAndSyncAllAction() {
     if (document.activeElement && typeof document.activeElement.blur === 'function') {
@@ -10590,14 +10690,27 @@ async function permanentSaveAndSyncAllAction() {
         }
     }
 
-    triggerBackgroundSync(dataset);
+    // Fix #37: the Save Data button reports the cloud result it
+    // actually verified -- never a success it did not check.
+    let _saveStatus = 'local';
+    if (isServerMode()) {
+        updateSyncBadge("syncing", "Saving to cloud...");
+        _saveStatus = await syncPushVerified(dataset);
+        if (_saveStatus === 'offline' || _saveStatus === 'failed') updateSyncBadge("idle", "Cloud save failed - not saved");
+    }
 
     renderAllViews();
     renderStaffStatementView();
     renderStaffCircularView();
     updateStats();
 
-    showToast("✅ All timetables and changes have been permanently saved to the cloud and this computer!");
+    if (_saveStatus === 'pushed' || _saveStatus === 'insync') {
+        showToast("✅ All timetables and changes have been permanently saved to the cloud and this computer!");
+    } else if (_saveStatus === 'local') {
+        showToast("✅ Changes saved on this computer.");
+    } else {
+        showToast("⚠️ Cloud save FAILED — changes are saved on this device only, NOT on the cloud. Check your internet and press Save Data again.");
+    }
 }
 
 function openCloudSyncModal() {
