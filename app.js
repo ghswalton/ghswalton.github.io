@@ -981,6 +981,21 @@ async function staffContinue() {
         return;
     }
     let teacher = findTeacherByMobile(mob);
+    if (!teacher) {
+        // Fix #43: at the start screen this device may still hold a
+        // stale or built-in seed copy of the teacher list (cloud sync
+        // only runs after a login), so a number that IS registered in
+        // the live Teachers & Workload was being rejected. Verify
+        // against the cloud dataset before refusing anyone.
+        try {
+            const res = await mantleCloudPull(syncConfig.cloudApiUrl);
+            const cj = await res.json();
+            if (cj && cj.success && cj.data && Array.isArray(cj.data.teachers)) {
+                const k = normalizeMobileKey(mob);
+                teacher = cj.data.teachers.find(t => normalizeMobileKey(t.mobileNumber) === k) || null;
+            }
+        } catch (e) { /* offline: fall through to the local result */ }
+    }
     if (!teacher && normalizeMobileKey(mob) === ADMIN_STAFF_MOBILE_KEY) teacher = findAdminTeacherRecord();
     if (!teacher) {
         staffErr('staffMobileErr', 'This mobile number is not registered in Teachers & Workload. Please enter the correct mobile number or contact the admin.');
@@ -1712,7 +1727,7 @@ function verifyOtpAndSetNewPassword(event) {
 // the existing OTP endpoint (same as the OTP recovery system).
 const SECURITY_MASTER_PIN = "Walton2026";
 const SECURITY_EMAIL = "asifjaved81@gmail.com";
-const SECURITY_EXPECTED_APPJS_HASH = "c37921dd"; // __SECURITY_HASH_LINE__ (replaced at build time)
+const SECURITY_EXPECTED_APPJS_HASH = "e9e18a2f"; // __SECURITY_HASH_LINE__ (replaced at build time)
 let securityTamperDetected = false;
 let securitySessionPin = null;
 
@@ -9828,7 +9843,7 @@ const DEFAULT_CLOUD_API_URL = "https://ghswalton-ecfa1-default-rtdb.firebaseio.c
 // Fix #21: cloud data lives in the school's own Google Firebase
 // Realtime Database (free Spark plan). The secret node name in the
 // path is the access key: database rules open that node only.
-const HOSTED_BUILD_ID = "20261109-42";
+const HOSTED_BUILD_ID = "20261110-43";
 // Fix #11: the verified cloud dataset is pinned by content hash;
 // its descendants carry this generation number.
 const PINNED_CLOUD_HASH = "3646e8372a518517:639493";
