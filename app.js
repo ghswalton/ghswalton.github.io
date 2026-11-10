@@ -1727,7 +1727,7 @@ function verifyOtpAndSetNewPassword(event) {
 // the existing OTP endpoint (same as the OTP recovery system).
 const SECURITY_MASTER_PIN = "Walton2026";
 const SECURITY_EMAIL = "asifjaved81@gmail.com";
-const SECURITY_EXPECTED_APPJS_HASH = "e9e18a2f"; // __SECURITY_HASH_LINE__ (replaced at build time)
+const SECURITY_EXPECTED_APPJS_HASH = "929cb10c"; // __SECURITY_HASH_LINE__ (replaced at build time)
 let securityTamperDetected = false;
 let securitySessionPin = null;
 
@@ -9843,7 +9843,7 @@ const DEFAULT_CLOUD_API_URL = "https://ghswalton-ecfa1-default-rtdb.firebaseio.c
 // Fix #21: cloud data lives in the school's own Google Firebase
 // Realtime Database (free Spark plan). The secret node name in the
 // path is the access key: database rules open that node only.
-const HOSTED_BUILD_ID = "20261110-43";
+const HOSTED_BUILD_ID = "20261110-44";
 // Fix #11: the verified cloud dataset is pinned by content hash;
 // its descendants carry this generation number.
 const PINNED_CLOUD_HASH = "3646e8372a518517:639493";
@@ -10626,12 +10626,15 @@ function triggerBackgroundSync(data, force = false) {
             let _casSeq = null;
             let _casHasData = false;
             let _casCloudHash = "";
+            let _casGen = 0;
+            let _casEpoch = 0;
             try {
                 const _cr = await mantleCloudPull(syncConfig.cloudApiUrl);
                 if (_cr.ok) {
                     const _cj = await _cr.json();
                     if (_cj.success) { _casSeq = _cj.data ? Number(_cj.data.syncSeq || 0) : 0; _casHasData = !!_cj.data; }
                     if (_cj.success && _cj.data) _casCloudHash = datasetContentHash(_cj.data);
+                    if (_cj.success && _cj.data) { _casGen = Number(_cj.data.syncGen || 0); _casEpoch = Number(_cj.data.syncEpoch || 0); }
                     if (_cj.success && _cj.data && Number(_cj.data.syncGen || 0) >= PINNED_CLOUD_GEN && heldSyncGen < PINNED_CLOUD_GEN) {
                         // Fix #37: a FORCED save (the active Chief/Admin
                         // editor's deliberate write) adopts the cloud
@@ -10706,6 +10709,27 @@ function triggerBackgroundSync(data, force = false) {
                 syncConfig.lastSyncedLocalHash = _casCloudHash;
                 saveSyncConfig();
                 updateSyncBadge("synced", "Synced with cloud");
+                return;
+            }
+            // Fix #44: behind-the-cloud hard stop. Every divert above
+            // exempts a FORCED push, so a stale device whose baseline
+            // is behind the cloud could still overwrite newer shared
+            // data (2026-11-10: a stale copy replaced the owner's
+            // freshly updated teacher numbers). If the cloud has
+            // advanced past this device's baseline with content this
+            // device never agreed to, and this payload is not that
+            // content, the push is refused -- forced or not -- and the
+            // device converges onto the cloud instead. Foreign clouds
+            // (older generation / unmarked) are exempt: repairing
+            // those is the checker's deliberate action.
+            if (_casHasData && _casSeq !== null
+                && typeof syncConfig.lastSyncedSeq === 'number'
+                && _casSeq > syncConfig.lastSyncedSeq
+                && _casCloudHash !== (syncConfig.lastSyncedCloudHash || "")
+                && _casCloudHash !== datasetContentHash(dataset)
+                && _casGen >= PINNED_CLOUD_GEN && _casEpoch >= 2) {
+                updateSyncBadge("syncing", "Updating from cloud...");
+                try { checkAutoSyncOnStartup(true); } catch (e) {}
                 return;
             }
         }
