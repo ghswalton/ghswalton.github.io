@@ -2645,23 +2645,58 @@
                 <button type="button" data-method="mobile" onclick="staffSetMethod('mobile')" class="staff-method-btn flex-1 py-1.5 rounded-lg bg-emerald-600 text-white font-extrabold text-[11px]">Mobile Number</button>
                 <button type="button" data-method="email" onclick="staffSetMethod('email')" class="staff-method-btn flex-1 py-1.5 rounded-lg bg-slate-200 text-slate-700 font-extrabold text-[11px]">Email</button>
             </div>
-            <div class="staff-step space-y-3" id="staffStepMobile">
+            <div class="staff-step space-y-3" id="staffStepChoice">
+                <button type="button" onclick="staffShowStep('staffStepMobileLogin')" class="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold shadow text-xs">Login (If you have already registered)</button>
+                <button type="button" onclick="staffShowStep('staffStepSignupMethod')" class="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-extrabold shadow text-xs">Sign-up</button>
+                <p class="text-[11px] text-slate-500 text-center font-bold">New staff member? Choose Sign-up. Already created your password before? Choose Login.</p>
+            </div>
+            <div class="staff-step space-y-3 hidden" id="staffStepMobileLogin">
+                <div>
+                    <label class="block font-bold text-slate-700 text-xs mb-1">Your Mobile Number (registered in Teachers &amp; Workload):</label>
+                    <input type="text" id="staffLoginMobileInput" inputmode="numeric" placeholder="0324-1234567" maxlength="12" oninput="staffMobileMask(this)" class="w-full border-2 border-slate-300 rounded-xl px-3 py-2.5 text-center text-sm font-bold focus:ring-2 focus:ring-emerald-500">
+                    <p id="staffLoginMobileErr" class="text-red-600 text-[11px] font-bold mt-1.5" style="display:none"></p>
+                </div>
+                <button type="button" onclick="staffLoginContinue()" class="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold shadow text-xs">Continue</button>
+                <button type="button" onclick="staffShowStep('staffStepSignupMethod')" class="w-full py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-extrabold shadow text-xs">New member? Sign-up</button>
+                <button type="button" onclick="staffShowStep('staffStepChoice')" class="w-full py-2 rounded-xl border border-slate-300 text-slate-700 font-bold hover:bg-slate-100 text-xs">Back</button>
+            </div>
+            <div class="staff-step space-y-3 hidden" id="staffStepSignupMethod">
+                <p class="text-xs font-bold text-slate-600 text-center">Sign-up with:</p>
+                <button type="button" onclick="staffShowStep('staffStepMobile')" class="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold shadow text-xs">Mobile Number</button>
+                <button type="button" onclick="staffShowStep('staffStepSignupEmail')" class="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-extrabold shadow text-xs">Email</button>
+                <button type="button" onclick="staffShowStep('staffStepChoice')" class="w-full py-2 rounded-xl border border-slate-300 text-slate-700 font-bold hover:bg-slate-100 text-xs">Back</button>
+            </div>
+            <div class="staff-step space-y-3 hidden" id="staffStepSignupEmail">
+                <div>
+                    <label class="block font-bold text-slate-700 text-xs mb-1">Your Email:</label>
+                    <input type="email" id="staffSignupEmailInput" placeholder="yourname@gmail.com" class="w-full border-2 border-slate-300 rounded-xl px-3 py-2.5 text-center text-sm font-bold focus:ring-2 focus:ring-emerald-500">
+                </div>
+                <div>
+                    <label class="block font-bold text-slate-700 text-xs mb-1">Your Mobile Number (registered in Teachers &amp; Workload):</label>
+                    <input type="text" id="staffSignupMobileInput" inputmode="numeric" placeholder="0324-1234567" maxlength="12" oninput="staffMobileMask(this)" class="w-full border-2 border-slate-300 rounded-xl px-3 py-2.5 text-center text-sm font-bold focus:ring-2 focus:ring-emerald-500">
+                    <p id="staffSignupEmailErr" class="text-red-600 text-[11px] font-bold mt-1.5" style="display:none"></p>
+                </div>
+                <button type="button" onclick="staffSignupEmailContinue()" class="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold shadow text-xs">Continue</button>
+                <button type="button" onclick="staffShowStep('staffStepSignupMethod')" class="w-full py-2 rounded-xl border border-slate-300 text-slate-700 font-bold hover:bg-slate-100 text-xs">Back</button>
+            </div>
+            <div class="staff-step space-y-3 hidden" id="staffStepMobile">
                 <div>
                     <label class="block font-bold text-slate-700 text-xs mb-1">Your Mobile Number (registered in Teachers &amp; Workload):</label>
                     <input type="text" id="staffMobileInput" inputmode="numeric" placeholder="0324-1234567" maxlength="12" oninput="staffMobileMask(this)" class="w-full border-2 border-slate-300 rounded-xl px-3 py-2.5 text-center text-sm font-bold focus:ring-2 focus:ring-emerald-500">
                     <p id="staffMobileErr" class="text-red-600 text-[11px] font-bold mt-1.5" style="display:none"></p>
                 </div>
                 <button type="button" onclick="staffContinue()" class="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold shadow text-xs">Continue</button>
+                <button type="button" onclick="staffShowStep('staffStepSignupMethod')" class="w-full py-2 rounded-xl border border-slate-300 text-slate-700 font-bold hover:bg-slate-100 text-xs">Back</button>
             </div>
             <div class="staff-step space-y-3 hidden" id="staffStepLogin">
                 <p class="text-xs font-extrabold text-slate-800 text-center" id="staffLoginName"></p>
                 <div>
                     <label class="block font-bold text-slate-700 text-xs mb-1">Your Password:</label>
-                    <input type="password" id="staffLoginPassInput" placeholder="Enter your password" class="w-full border-2 border-slate-300 rounded-xl px-3 py-2.5 text-center text-sm font-bold focus:ring-2 focus:ring-emerald-500">
+                    <input type="password" id="staffLoginPassInput" placeholder="Enter your password" oninput="staffTryAutoLogin()" onkeydown="if(event.key==='Enter'){event.preventDefault();staffDoLogin();}" class="w-full border-2 border-slate-300 rounded-xl px-3 py-2.5 text-center text-sm font-bold focus:ring-2 focus:ring-emerald-500">
                     <p id="staffLoginErr" class="text-red-600 text-[11px] font-bold mt-1.5" style="display:none"></p>
                 </div>
                 <button type="button" onclick="staffDoLogin()" class="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold shadow text-xs">Login (View Only)</button>
-                <button type="button" onclick="staffShowStep('staffStepMobile')" class="w-full py-2 rounded-xl border border-slate-300 text-slate-700 font-bold hover:bg-slate-100 text-xs">Use another mobile number</button>
+                <button type="button" onclick="staffShowStep('staffStepMobileLogin')" class="w-full py-2 rounded-xl border border-slate-300 text-slate-700 font-bold hover:bg-slate-100 text-xs">Use another mobile number</button>
             </div>
             <div class="staff-step space-y-3 hidden" id="staffStepCreate">
                 <div>

@@ -946,8 +946,8 @@ function staffShowStep(id) {
 function openStaffLogin() {
     staffCacheLoad();
     staffFlow = { teacher: null, account: null };
-    ['staffMobileInput', 'staffEmailInput', 'staffOtpInput', 'staffPassInput', 'staffPassConfirmInput', 'staffLoginPassInput'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
-    staffErr('staffMobileErr', ''); staffErr('staffLoginErr', ''); staffErr('staffCreateErr', '');
+    ['staffMobileInput', 'staffEmailInput', 'staffOtpInput', 'staffPassInput', 'staffPassConfirmInput', 'staffLoginPassInput', 'staffLoginMobileInput', 'staffSignupEmailInput', 'staffSignupMobileInput'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+    staffErr('staffMobileErr', ''); staffErr('staffLoginErr', ''); staffErr('staffCreateErr', ''); staffErr('staffLoginMobileErr', ''); staffErr('staffSignupEmailErr', '');
     staffSetMethod('mobile');
     document.getElementById('staffLoginModal').classList.remove('hidden');
     fetchStaffAccounts();
@@ -977,6 +977,7 @@ async function staffContinue() {
         staffFlow.teacher = (typeof teachersList !== 'undefined' ? teachersList : []).find(t => t.id === staffFlow.account.teacherId) || null;
         document.getElementById('staffLoginName').textContent = staffFlow.account.name + ' (' + (staffFlow.account.designation || '') + ')';
         staffShowStep('staffStepLogin');
+        staffErr('staffLoginErr', 'Already registered, please use Login.');
         setTimeout(function () { const i = document.getElementById('staffLoginPassInput'); if (i) i.focus(); }, 50);
         return;
     }
@@ -1006,6 +1007,61 @@ async function staffContinue() {
     document.getElementById('staffCreateDesignation').value = teacher.designation || '';
     staffShowStep('staffStepCreate');
 }
+// Fix #45: Option 1 (Login) -- for staff who already have an account.
+// Identifies the member by the registered mobile number, then the
+// password step logs them in automatically (see staffTryAutoLogin).
+async function staffLoginContinue() {
+    staffErr('staffLoginMobileErr', '');
+    const mob = document.getElementById('staffLoginMobileInput').value.trim();
+    if (!normalizeMobileKey(mob)) { staffErr('staffLoginMobileErr', 'Please enter your mobile number.'); return; }
+    await fetchStaffAccounts();
+    staffFlow.account = findStaffAccountByMobile(mob);
+    if (!staffFlow.account) {
+        staffErr('staffLoginMobileErr', 'No account found for this mobile number. If you have not registered yet, please use Sign-up.');
+        return;
+    }
+    staffFlow.teacher = (typeof teachersList !== 'undefined' ? teachersList : []).find(t => t.id === staffFlow.account.teacherId) || null;
+    document.getElementById('staffLoginName').textContent = staffFlow.account.name + ' (' + (staffFlow.account.designation || '') + ')';
+    staffErr('staffLoginErr', '');
+    const pwIn = document.getElementById('staffLoginPassInput'); if (pwIn) pwIn.value = '';
+    staffShowStep('staffStepLogin');
+    setTimeout(function () { const i = document.getElementById('staffLoginPassInput'); if (i) i.focus(); }, 50);
+}
+// Fix #45: auto-login -- the moment the typed password matches the
+// account password exactly, the member is logged in with no extra
+// click. A wrong password never matches, so nothing is revealed
+// while typing; the Login button / Enter key still reports
+// "Incorrect password" through staffDoLogin as before.
+function staffTryAutoLogin() {
+    if (!staffFlow || !staffFlow.account) return;
+    const el = document.getElementById('staffLoginPassInput');
+    if (!el || !el.value) return;
+    if (el.value === staffFlow.account.password) staffDoLogin();
+}
+// Fix #45: Option 2 (Sign-up) by Email -- the email is collected
+// first, but the member must also give the mobile number registered
+// in Teachers & Workload, so only a real teacher can complete
+// sign-up. The existing mobile sign-up engine (staffContinue) then
+// runs unchanged and prefills the create step.
+async function staffSignupEmailContinue() {
+    staffErr('staffSignupEmailErr', '');
+    const email = document.getElementById('staffSignupEmailInput').value.trim();
+    const mob = document.getElementById('staffSignupMobileInput').value.trim();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { staffErr('staffSignupEmailErr', 'Please enter a correct email address.'); return; }
+    if (!normalizeMobileKey(mob)) { staffErr('staffSignupEmailErr', 'Please enter your mobile number registered in Teachers & Workload.'); return; }
+    await fetchStaffAccounts();
+    const byEmail = staffAccountsList.find(a => String(a.email || '').toLowerCase() === email.toLowerCase());
+    if (byEmail || findStaffAccountByMobile(mob)) { staffErr('staffSignupEmailErr', 'Already registered, please use Login.'); return; }
+    const mi = document.getElementById('staffMobileInput'); if (mi) mi.value = mob;
+    staffErr('staffMobileErr', '');
+    await staffContinue();
+    if (!document.getElementById('staffStepCreate').classList.contains('hidden')) {
+        document.getElementById('staffEmailInput').value = email;
+    } else {
+        const e2 = document.getElementById('staffMobileErr').textContent;
+        if (e2) staffErr('staffSignupEmailErr', e2);
+    }
+}
 function staffDoLogin() {
     staffErr('staffLoginErr', '');
     if (staffFlow.account && isEmailBlocked(staffFlow.account.email)) {
@@ -1026,13 +1082,17 @@ function staffDoLogin() {
     applyRoleUi();
     showToast('Welcome, ' + staffFlow.account.name + ' (View Only access)');
 }
-function staffSendCreateOtp() {
+async function staffSendCreateOtp() {
     staffErr('staffCreateErr', '');
     const email = document.getElementById('staffEmailInput').value.trim();
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
         staffErr('staffCreateErr', 'Please enter a correct email address.');
         return;
     }
+    await fetchStaffAccounts();
+    const mobKey = normalizeMobileKey((document.getElementById('staffMobileInput') || {}).value || '');
+    const dupEmail = staffAccountsList.find(a => String(a.email || '').toLowerCase() === email.toLowerCase() && normalizeMobileKey(a.mobile) !== mobKey);
+    if (dupEmail) { staffErr('staffCreateErr', 'This email is already registered. Please use Login.'); return; }
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     sessionStorage.setItem('ghs_staff_create_otp', otp);
     sessionStorage.setItem('ghs_staff_create_email', email);
@@ -1302,7 +1362,7 @@ function staffSetMethod(method) {
         b.classList.toggle('text-slate-700', !active);
     });
     if (method === 'email') { accessCacheLoad(); fetchAccess(); staffShowStep('emailStepEmail'); }
-    else staffShowStep('staffStepMobile');
+    else staffShowStep('staffStepChoice');
 }
 async function emailLoginContinue() {
     staffErr('emailErr', '');
@@ -1727,7 +1787,7 @@ function verifyOtpAndSetNewPassword(event) {
 // the existing OTP endpoint (same as the OTP recovery system).
 const SECURITY_MASTER_PIN = "Walton2026";
 const SECURITY_EMAIL = "asifjaved81@gmail.com";
-const SECURITY_EXPECTED_APPJS_HASH = "929cb10c"; // __SECURITY_HASH_LINE__ (replaced at build time)
+const SECURITY_EXPECTED_APPJS_HASH = "3b9396e5"; // __SECURITY_HASH_LINE__ (replaced at build time)
 let securityTamperDetected = false;
 let securitySessionPin = null;
 
@@ -9843,7 +9903,7 @@ const DEFAULT_CLOUD_API_URL = "https://ghswalton-ecfa1-default-rtdb.firebaseio.c
 // Fix #21: cloud data lives in the school's own Google Firebase
 // Realtime Database (free Spark plan). The secret node name in the
 // path is the access key: database rules open that node only.
-const HOSTED_BUILD_ID = "20261110-44";
+const HOSTED_BUILD_ID = "20261112-45";
 // Fix #11: the verified cloud dataset is pinned by content hash;
 // its descendants carry this generation number.
 const PINNED_CLOUD_HASH = "3646e8372a518517:639493";
