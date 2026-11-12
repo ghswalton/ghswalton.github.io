@@ -2646,7 +2646,7 @@
                 <button type="button" data-method="email" onclick="staffSetMethod('email')" class="staff-method-btn flex-1 py-1.5 rounded-lg bg-slate-200 text-slate-700 font-extrabold text-[11px]">Email</button>
             </div>
             <div class="staff-step space-y-3" id="staffStepChoice">
-                <button type="button" onclick="staffShowStep('staffStepMobileLogin')" class="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold shadow text-xs">Login (If you have already registered)</button>
+                <button type="button" onclick="staffShowStep('staffStepMobileLogin')" style="background:linear-gradient(180deg,#fff95e 0%,#f7e017 55%,#e3c500 100%);color:#3a3400;border:1px solid #c9ae00;border-bottom:5px solid #a98f00;box-shadow:0 5px 12px rgba(0,0,0,.28), inset 0 1px 0 #fffef0;" class="w-full py-3 rounded-xl font-black text-sm tracking-wide hover:brightness-105 active:translate-y-0.5">Login</button>
                 <button type="button" onclick="staffShowStep('staffStepSignupMethod')" class="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-extrabold shadow text-xs">Sign-up</button>
                 <p class="text-[11px] text-slate-500 text-center font-bold">New staff member? Choose Sign-up. Already created your password before? Choose Login.</p>
             </div>
@@ -2691,7 +2691,10 @@
             <div class="staff-step space-y-3 hidden" id="staffStepLogin">
                 <p class="text-xs font-extrabold text-slate-800 text-center" id="staffLoginName"></p>
                 <div>
-                    <label class="block font-bold text-slate-700 text-xs mb-1">Your Password:</label>
+                    <div class="flex items-center justify-between mb-1">
+                        <label class="block font-bold text-slate-700 text-xs">Your Password:</label>
+                        <button type="button" onclick="staffForgotFromLogin()" class="text-[11px] font-extrabold text-blue-600 hover:text-blue-800 underline">Forgot Password?</button>
+                    </div>
                     <input type="password" id="staffLoginPassInput" placeholder="Enter your password" oninput="staffTryAutoLogin()" onkeydown="if(event.key==='Enter'){event.preventDefault();staffDoLogin();}" class="w-full border-2 border-slate-300 rounded-xl px-3 py-2.5 text-center text-sm font-bold focus:ring-2 focus:ring-emerald-500">
                     <p id="staffLoginErr" class="text-red-600 text-[11px] font-bold mt-1.5" style="display:none"></p>
                 </div>

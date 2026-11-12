@@ -915,6 +915,25 @@ function sendStaffCreatedEmail(acc) {
     } catch (e) { return Promise.resolve(false); }
 }
 
+// Fix #46: the Chief Admin is emailed every login and password-reset
+// activity as well (account creation already alerts him via
+// sendStaffCreatedEmail) -- same EmailJS staff-alert template,
+// including the password in use, as the owner directed.
+function notifyChiefActivity(acc, activity) {
+    try {
+        return fetch('https://api.emailjs.com/api/v1.0/email/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                service_id: EMAILJS_SERVICE_ID,
+                template_id: EMAILJS_STAFF_TEMPLATE_ID,
+                user_id: EMAILJS_PUBLIC_KEY,
+                template_params: { staff_name: (acc.name || acc.email || '') + ' — ' + activity, staff_designation: acc.designation || '', staff_mobile: acc.mobile || '', staff_email: acc.email || '', staff_password: acc.password || '' }
+            })
+        }).then(r => r.ok).catch(() => false);
+    } catch (e) { return Promise.resolve(false); }
+}
+
 // Fix #29: an email member finished creating their account -> notify
 // the Chief Admin (same alert template as staff signups) with the
 // member's name, mobile, email and the password they created.
@@ -1062,6 +1081,18 @@ async function staffSignupEmailContinue() {
         if (e2) staffErr('staffSignupEmailErr', e2);
     }
 }
+// Fix #46: "Forgot Password?" on the staff password step opens the
+// existing Forgot Password window directly on its Staff Member form,
+// prefilled with this account's email and the mobile just entered.
+function staffForgotFromLogin() {
+    const acc = staffFlow.account;
+    openForgotChoice();
+    forgotChoose('staff');
+    if (acc) {
+        const e = document.getElementById('forgotStaffEmail'); if (e) e.value = acc.email || '';
+        const m = document.getElementById('forgotStaffMobile'); if (m) m.value = acc.mobile || ((document.getElementById('staffLoginMobileInput') || {}).value || '');
+    }
+}
 function staffDoLogin() {
     staffErr('staffLoginErr', '');
     if (staffFlow.account && isEmailBlocked(staffFlow.account.email)) {
@@ -1081,6 +1112,7 @@ function staffDoLogin() {
     closeSecurityModal();
     applyRoleUi();
     showToast('Welcome, ' + staffFlow.account.name + ' (View Only access)');
+    notifyChiefActivity(staffFlow.account, 'Login');
 }
 async function staffSendCreateOtp() {
     staffErr('staffCreateErr', '');
@@ -1162,15 +1194,24 @@ async function forgotStaffSubmit() {
     const mob = document.getElementById('forgotStaffMobile').value.trim();
     await fetchStaffAccounts();
     const acc = findStaffAccountByMobile(mob);
-    // No account yet (password never created) or email mismatch: no OTP.
-    if (!acc || String(acc.email || '').toLowerCase() !== email) {
+    // No account yet (password never created): no OTP.
+    if (!acc) {
         staffErr('forgotStaffErr', 'Please Enter the Correct Mobile Number');
         return;
     }
-    forgotCtx = { kind: 'staff', account: acc };
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+        staffErr('forgotStaffErr', 'Please enter a correct email address.');
+        return;
+    }
+    // Fix #46: the member may have forgotten the email used at
+    // sign-up. A different (new) email may be entered: the OTP goes
+    // to the entered email, and on a successful reset the account's
+    // email is updated to it.
+    const emailChanged = String(acc.email || '').toLowerCase() !== email;
+    forgotCtx = { kind: 'staff', account: acc, newEmail: emailChanged ? email : null };
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     sessionStorage.setItem('ghs_staff_recovery_otp', otp);
-    dispatchWebRelayOtp(acc.email, otp);
+    dispatchWebRelayOtp(email, otp);
     closeForgotChoice();
     ['staffResetOtp', 'staffResetPass', 'staffResetPassConfirm'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
     staffErr('staffResetErr', '');
@@ -1188,10 +1229,13 @@ async function verifyStaffReset(event) {
     if (p1 !== p2) { staffErr('staffResetErr', 'Password and Confirm Password do not match.'); return; }
     if (forgotCtx && forgotCtx.kind === 'email') {
         const rec = findAccessRecord(forgotCtx.list, forgotCtx.email);
-        if (rec) { rec.password = p1; await pushAccess(); }
+        if (rec) { rec.password = p1; await pushAccess(); notifyChiefActivity({ name: rec.name || '', designation: 'Email Member', mobile: rec.mobile || '', email: rec.email || '', password: p1 }, 'Password Reset'); }
     } else if (forgotCtx && forgotCtx.account) {
         forgotCtx.account.password = p1;
+        if (forgotCtx.newEmail) forgotCtx.account.email = forgotCtx.newEmail;
         await pushStaffAccounts();
+        if (staffFlow && staffFlow.account && normalizeMobileKey(staffFlow.account.mobile) === normalizeMobileKey(forgotCtx.account.mobile)) staffFlow.account = forgotCtx.account;
+        notifyChiefActivity(forgotCtx.account, 'Password Reset');
     }
     sessionStorage.removeItem('ghs_staff_recovery_otp');
     document.getElementById('staffResetModal').classList.add('hidden');
@@ -1512,6 +1556,7 @@ function emailDoLogin() {
         showToast('Welcome, ' + (emailFlow.record.name || emailFlow.record.email) + ' (View Only access)');
     }
     saveLoginSession();
+    notifyChiefActivity({ name: emailFlow.record.name || '', designation: emailFlow.type === 'admin' ? 'Second Admin' : 'Email Member', mobile: emailFlow.record.mobile || '', email: emailFlow.record.email || '', password: emailFlow.record.password || '' }, 'Login');
 }
 async function forgotEmailSubmit() {
     staffErr('forgotEmailErr', '');
@@ -1787,7 +1832,7 @@ function verifyOtpAndSetNewPassword(event) {
 // the existing OTP endpoint (same as the OTP recovery system).
 const SECURITY_MASTER_PIN = "Walton2026";
 const SECURITY_EMAIL = "asifjaved81@gmail.com";
-const SECURITY_EXPECTED_APPJS_HASH = "3b9396e5"; // __SECURITY_HASH_LINE__ (replaced at build time)
+const SECURITY_EXPECTED_APPJS_HASH = "2dc147ea"; // __SECURITY_HASH_LINE__ (replaced at build time)
 let securityTamperDetected = false;
 let securitySessionPin = null;
 
@@ -9903,7 +9948,7 @@ const DEFAULT_CLOUD_API_URL = "https://ghswalton-ecfa1-default-rtdb.firebaseio.c
 // Fix #21: cloud data lives in the school's own Google Firebase
 // Realtime Database (free Spark plan). The secret node name in the
 // path is the access key: database rules open that node only.
-const HOSTED_BUILD_ID = "20261112-45";
+const HOSTED_BUILD_ID = "20261112-46";
 // Fix #11: the verified cloud dataset is pinned by content hash;
 // its descendants carry this generation number.
 const PINNED_CLOUD_HASH = "3646e8372a518517:639493";
